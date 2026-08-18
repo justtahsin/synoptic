@@ -13,6 +13,9 @@ use synoptic_core::{
 
 slint::include_modules!();
 
+/// Reverse-DNS application id: Wayland app_id and X11 WM_CLASS.
+const APP_ID: &str = "io.github.justtahsin.Synoptic";
+
 /// Seconds of history shown in the Performance graphs.
 const HISTORY: usize = 60;
 /// Virtual coordinate space of the graph paths (matches the .slint viewbox).
@@ -92,6 +95,17 @@ struct AppState {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // Install a winit backend that stamps our app id on every window, so
+    // taskbars, icons and compositor window rules can match the app.
+    let backend = i_slint_backend_winit::Backend::builder()
+        .with_window_attributes_hook(|attrs| {
+            let attrs = i_slint_backend_winit::winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, APP_ID, APP_ID);
+            i_slint_backend_winit::winit::platform::x11::WindowAttributesExtX11::with_name(attrs, APP_ID, APP_ID)
+        })
+        .build()?;
+    slint::platform::set_platform(Box::new(backend))
+        .expect("set_platform must be called before the first window is created");
+
     let app = MainWindow::new()?;
 
     // Test aid: `--page N` opens directly on the given page.

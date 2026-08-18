@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 slint = "1"
+i-slint-backend-winit = "=1.17.1"
 synoptic-core = { path = "../core" }
 
 [build-dependencies]
