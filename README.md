@@ -17,18 +17,28 @@ gibi ikiye ayrık:
 cargo run --release
 ```
 
-## PoC'de neler var
+Çekirdeği GUI'siz denemek için: `cargo run -p taskman-core --example top`
 
-- **İşlemler**: 1 sn aralıkla canlı süreç listesi (ad, PID, CPU %, bellek),
-  CPU'ya göre sıralı; yazarak arama; "Görevi sonlandır" (SIGTERM).
-- **Performans**: son 60 saniyenin CPU grafiği, bellek kullanım çubuğu.
-- Windows'taki gibi CPU yüzdesi makine kapasitesine göredir (tüm çekirdekler = %100).
-- Kernel thread'leri gizlenir (Windows'un süreç görünümü gibi).
+## Neler var
+
+- **İşlemler**
+  - Windows'taki gibi üç grup: **Uygulamalar / Arka plan işlemleri / Sistem
+    işlemleri** (systemd cgroup `app.slice` + uid sezgiseliyle)
+  - 1 sn aralıkla canlı liste; sütun başlığına tıklayarak sıralama
+  - Yazarak arama (ad veya PID)
+  - "Görevi sonlandır" (SIGTERM); seçim, liste yeniden sıralansa da **PID ile korunur**
+- **Performans**
+  - Son 60 saniyenin CPU grafiği + çekirdek başına anlık yük çubukları
+  - Bellek kullanım çubuğu
+- CPU yüzdesi makine kapasitesine göredir (tüm çekirdekler = %100), Windows ile aynı.
+- Kernel thread'leri gizlenir; tablo modeli her saniye yeniden yaratılmak yerine
+  yerinde güncellenir.
 
 ## Bilinen PoC sınırları
 
-- Uygulama gruplama (Uygulamalar / Arka plan) yok — F1 kapsamı.
-- Sıralama sabit (CPU), sütun tıklamayla sıralama yok.
-- Liste her saniye yenilendiğinde seçim satır numarasında kalır (kayabilir).
+- Çok süreçli uygulamalar tek satırda toplanmıyor (Windows'taki genişleyebilir
+  gruplar F2+).
+- Gruplama sezgiseli systemd tabanlı: terminalden başlatılan bazı süreçler
+  "Arka plan"a düşebilir.
 - Bellek RSS'tir (paylaşılan sayfalar dahil); PSS daha sonra.
-- Örnekleme UI thread'inde (hızlı olduğu için); nihai sürümde ayrı thread'e taşınacak.
+- Örnekleme UI thread'inde; nihai sürümde ayrı thread'e taşınacak.

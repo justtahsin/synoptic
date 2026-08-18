@@ -5,8 +5,20 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 
-/// One process, as shown in the process list.
+/// Which section of the process list a process belongs to,
+/// mirroring Windows Task Manager's Apps / Background / System split.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    /// Desktop applications: user processes running in systemd's `app.slice`.
+    App,
+    /// Other user-session processes (agents, terminal children, user services).
+    Background,
+    /// Daemons and processes owned by system users (uid < 1000).
+    System,
+}
+
 pub struct ProcessInfo {
     pub pid: i32,
     pub name: String,
@@ -14,11 +26,14 @@ pub struct ProcessInfo {
     pub cpu_percent: f32,
     /// Resident set size in bytes (RSS; cheap but approximate - PSS comes later).
     pub mem_bytes: u64,
+    pub group: Group,
 }
 
 /// A single sampling pass over the whole system.
 pub struct Snapshot {
     pub cpu_percent: f32,
+    /// Instantaneous busy percentage of each logical CPU.
+    pub per_core: Vec<f32>,
     pub mem_total: u64,
     pub mem_used: u64,
     pub processes: Vec<ProcessInfo>,
@@ -33,6 +48,7 @@ struct CpuTimes {
 /// Stateful sampler: keeps previous readings to compute deltas.
 pub struct Sampler {
     prev_cpu: Option<CpuTimes>,
+    prev_cores: Vec<CpuTimes>,
     /// pid -> utime+stime jiffies at the previous sample.
     prev_proc: HashMap<i32, u64>,
     page_size: u64,
@@ -42,6 +58,7 @@ impl Sampler {
     pub fn new() -> Self {
         Self {
             prev_cpu: None,
+            prev_cores: Vec::new(),
             prev_proc: HashMap::new(),
             page_size: page_size(),
         }
@@ -49,8 +66,8 @@ impl Sampler {
 
     pub fn sample(&mut self) -> Snapshot {
         let cpu = read_cpu_times();
-        let (cpu_percent, total_delta) = match (self.prev_cpu, cpu) {
-            (Some(prev), Some(cur)) => {
+        let (cpu_percent, total_delta) = match (&self.prev_cpu, &cpu) {
+            (Some(prev), Some((cur, _))) => {
                 let dt = cur.total.saturating_sub(prev.total);
                 let di = cur.idle.saturating_sub(prev.idle);
                 let pct = if dt > 0 {
@@ -62,8 +79,24 @@ impl Sampler {
             }
             _ => (0.0, 0),
         };
-        if let Some(cur) = cpu {
-            self.prev_cpu = Some(cur);
+
+        let mut per_core = Vec::new();
+        if let Some((cur, cores)) = &cpu {
+            if self.prev_cores.len() == cores.len() {
+                for (prev, cur) in self.prev_cores.iter().zip(cores) {
+                    let dt = cur.total.saturating_sub(prev.total);
+                    let di = cur.idle.saturating_sub(prev.idle);
+                    per_core.push(if dt > 0 {
+                        100.0 * dt.saturating_sub(di) as f32 / dt as f32
+                    } else {
+                        0.0
+                    });
+                }
+            } else {
+                per_core = vec![0.0; cores.len()];
+            }
+            self.prev_cpu = Some(*cur);
+            self.prev_cores = cores.clone();
         }
 
         let (mem_total, mem_used) = read_meminfo();
@@ -79,6 +112,14 @@ impl Sampler {
                 let Some(raw) = read_process(pid, self.page_size) else {
                     continue;
                 };
+                let uid = entry.metadata().map(|m| m.uid()).unwrap_or(u32::MAX);
+                let group = if uid == u32::MAX || uid < 1000 {
+                    Group::System
+                } else if raw.in_app_slice {
+                    Group::App
+                } else {
+                    Group::Background
+                };
                 let cpu_p = match self.prev_proc.get(&pid) {
                     Some(&prev) if total_delta > 0 => {
                         100.0 * raw.jiffies.saturating_sub(prev) as f32 / total_delta as f32
@@ -91,6 +132,7 @@ impl Sampler {
                     name: raw.name,
                     cpu_percent: cpu_p,
                     mem_bytes: raw.mem_bytes,
+                    group,
                 });
             }
         }
@@ -98,6 +140,7 @@ impl Sampler {
 
         Snapshot {
             cpu_percent,
+            per_core,
             mem_total,
             mem_used,
             processes,
@@ -125,6 +168,7 @@ struct RawProc {
     name: String,
     jiffies: u64,
     mem_bytes: u64,
+    in_app_slice: bool,
 }
 
 fn read_process(pid: i32, page_size: u64) -> Option<RawProc> {
@@ -145,28 +189,44 @@ fn read_process(pid: i32, page_size: u64) -> Option<RawProc> {
     let stime: u64 = rest.get(12)?.parse().ok()?;
     let statm = fs::read_to_string(format!("{base}/statm")).ok()?;
     let resident_pages: u64 = statm.split_ascii_whitespace().nth(1)?.parse().ok()?;
+    // Desktop apps live under systemd's app.slice in the unified cgroup hierarchy.
+    let in_app_slice = fs::read_to_string(format!("{base}/cgroup"))
+        .map(|c| c.contains("/app.slice/"))
+        .unwrap_or(false);
     Some(RawProc {
         name,
         jiffies: utime + stime,
         mem_bytes: resident_pages * page_size,
+        in_app_slice,
     })
 }
 
-fn read_cpu_times() -> Option<CpuTimes> {
+fn read_cpu_times() -> Option<(CpuTimes, Vec<CpuTimes>)> {
     let stat = fs::read_to_string("/proc/stat").ok()?;
-    let line = stat.lines().next()?;
-    let mut fields = line.split_ascii_whitespace();
-    if fields.next()? != "cpu" {
-        return None;
+    let mut total = None;
+    let mut cores = Vec::new();
+    for line in stat.lines() {
+        let mut fields = line.split_ascii_whitespace();
+        let Some(label) = fields.next() else { continue };
+        if !label.starts_with("cpu") {
+            continue;
+        }
+        let vals: Vec<u64> = fields.filter_map(|v| v.parse().ok()).collect();
+        if vals.len() < 5 {
+            continue;
+        }
+        // user nice system idle iowait irq softirq steal
+        let t = CpuTimes {
+            total: vals.iter().take(8).sum(),
+            idle: vals[3] + vals[4],
+        };
+        if label == "cpu" {
+            total = Some(t);
+        } else {
+            cores.push(t);
+        }
     }
-    let vals: Vec<u64> = fields.filter_map(|v| v.parse().ok()).collect();
-    if vals.len() < 5 {
-        return None;
-    }
-    // user nice system idle iowait irq softirq steal
-    let idle = vals[3] + vals.get(4).copied().unwrap_or(0);
-    let total: u64 = vals.iter().take(8).sum();
-    Some(CpuTimes { total, idle })
+    total.map(|t| (t, cores))
 }
 
 fn read_meminfo() -> (u64, u64) {

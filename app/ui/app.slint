@@ -50,16 +50,20 @@ export component MainWindow inherits Window {
 
     in-out property <int> page: 0;
     in-out property <[[StandardListViewItem]]> process-rows;
+    in-out property <int> selected-row <=> table.current-row;
     in-out property <string> cpu-line;
     in-out property <string> cpu-fill;
     in-out property <string> cpu-text: "%0";
     in-out property <string> cpu-detail;
+    in-out property <[float]> core-loads;
     in-out property <string> mem-text;
     in-out property <float> mem-fraction;
     in-out property <string> status-text;
 
     callback kill-requested(int);
     callback search-edited(string);
+    callback sort-ascending(int);
+    callback sort-descending(int);
 
     HorizontalLayout {
         Rectangle {
@@ -119,6 +123,8 @@ export component MainWindow inherits Window {
                             { title: "Bellek", horizontal-stretch: 1 },
                         ];
                         rows: root.process-rows;
+                        sort-ascending(index) => { root.sort-ascending(index); }
+                        sort-descending(index) => { root.sort-descending(index); }
                     }
                     Text {
                         text: root.status-text;
@@ -162,6 +168,25 @@ export component MainWindow inherits Window {
                             viewbox-height: 100;
                             stroke: #0067C0;
                             stroke-width: 1.5px;
+                        }
+                    }
+                    Text {
+                        text: "Çekirdek başına anlık yük";
+                        font-size: 12px;
+                        opacity: 0.7;
+                    }
+                    HorizontalLayout {
+                        height: 46px;
+                        spacing: 3px;
+                        for load in root.core-loads: Rectangle {
+                            background: #80808022;
+                            border-radius: 2px;
+                            Rectangle {
+                                y: parent.height * (1 - load / 100);
+                                height: parent.height * load / 100;
+                                border-radius: 2px;
+                                background: #0067C0;
+                            }
                         }
                     }
                     Text { text: "Bellek"; font-size: 20px; font-weight: 600; }
