@@ -37,9 +37,11 @@ cargo run --release
   PID/Ad/Durum/Kullanıcı/CPU/Bellek sütunları, sıralama, SIGTERM ve SIGKILL
 - **Hizmetler**: systemd servislerini listeler (5 sn'de bir tazelenir); Başlat /
   Durdur / Yeniden başlat — yetki gerektiğinde polkit sorar (arayüz asla root çalışmaz)
-- **Performans**
-  - Son 60 saniyenin CPU grafiği + çekirdek başına anlık yük çubukları
-  - Bellek kullanım çubuğu
+- **Performans** (Windows 11 düzeni)
+  - Solda mini grafikli kaynak kartları: CPU, Bellek, her fiziksel Disk, her Ağ arayüzü
+  - Sağda seçilen kaynağın 60 sn'lik büyük grafiği ve ayrıntıları
+  - CPU: çekirdek başına anlık yük çubukları; Bellek: kompozisyon çubuğu
+  - Disk: etkin süre %'si + okuma/yazma hızı; Ağ: alma/gönderme (çift çizgi, otomatik ölçek)
 - CPU yüzdesi makine kapasitesine göredir (tüm çekirdekler = %100), Windows ile aynı.
 - Kernel thread'leri gizlenir; tablo modeli her saniye yeniden yaratılmak yerine
   yerinde güncellenir.

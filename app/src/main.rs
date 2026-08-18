@@ -4,30 +4,60 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use slint::{ModelRc, SharedString, StandardListViewItem, Timer, TimerMode, VecModel};
+use slint::{Color, ModelRc, SharedString, StandardListViewItem, Timer, TimerMode, VecModel};
 use taskman_core::{
-    Group, ProcessInfo, Sampler, ServiceAction, ServiceInfo, Snapshot, StartupEntry,
+    DiskStats, Group, NetStats, ProcessInfo, Sampler, ServiceAction, ServiceInfo, Snapshot,
+    StartupEntry,
 };
 
 slint::include_modules!();
 
-/// Seconds of CPU history shown in the Performance graph.
+/// Seconds of history shown in the Performance graphs.
 const HISTORY: usize = 60;
 /// Virtual coordinate space of the graph paths (matches the .slint viewbox).
 const VIEW_W: f32 = 600.0;
 const VIEW_H: f32 = 100.0;
 /// Refresh the service list every N sampling ticks.
 const SERVICE_REFRESH_TICKS: u32 = 5;
+/// Minimum network graph scale so idle noise does not fill the graph.
+const MIN_NET_SCALE: f32 = 50.0 * 1024.0;
+
+const BLUE: Color = Color::from_rgb_u8(0x00, 0x67, 0xC0);
+const PURPLE: Color = Color::from_rgb_u8(0x9A, 0x48, 0xD0);
+const GREEN: Color = Color::from_rgb_u8(0x12, 0x85, 0x5F);
+const ORANGE: Color = Color::from_rgb_u8(0xC4, 0x6A, 0x00);
 
 /// Set by worker threads after a service action so the next tick re-lists.
 static REFRESH_SERVICES: AtomicBool = AtomicBool::new(false);
 
+enum CardKey {
+    Cpu,
+    Mem,
+    Disk(String),
+    Net(String),
+}
+
 struct AppState {
     sampler: Sampler,
-    history: VecDeque<f32>,
     users: HashMap<u32, String>,
     processes: Vec<ProcessInfo>,
     tick: u32,
+
+    // Performans
+    hist_cpu: VecDeque<f32>,
+    hist_mem: VecDeque<f32>,
+    hist_disk: HashMap<String, VecDeque<f32>>,
+    hist_net_rx: HashMap<String, VecDeque<f32>>,
+    hist_net_tx: HashMap<String, VecDeque<f32>>,
+    last_cpu: f32,
+    last_cores: usize,
+    last_proc_count: usize,
+    last_mem_total: u64,
+    last_mem_used: u64,
+    last_disks: Vec<DiskStats>,
+    last_nets: Vec<NetStats>,
+    card_keys: Vec<CardKey>,
+    perf_model: Rc<VecModel<PerfCard>>,
 
     // İşlemler (grouped view)
     filter: String,
@@ -59,6 +89,14 @@ struct AppState {
 fn main() -> Result<(), slint::PlatformError> {
     let app = MainWindow::new()?;
 
+    // Test aid: `--page N` opens directly on the given page.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--page") {
+        if let Some(n) = args.get(i + 1).and_then(|v| v.parse::<i32>().ok()) {
+            app.set_page(n.clamp(0, 4));
+        }
+    }
+
     let rows_model = Rc::new(VecModel::default());
     app.set_process_rows(ModelRc::from(rows_model.clone()));
     let b_rows_model = Rc::new(VecModel::default());
@@ -67,13 +105,28 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_detail_rows(ModelRc::from(d_rows_model.clone()));
     let s_rows_model = Rc::new(VecModel::default());
     app.set_service_rows(ModelRc::from(s_rows_model.clone()));
+    let perf_model = Rc::new(VecModel::default());
+    app.set_perf_cards(ModelRc::from(perf_model.clone()));
 
     let state = Rc::new(RefCell::new(AppState {
         sampler: Sampler::new(),
-        history: VecDeque::with_capacity(HISTORY),
         users: taskman_core::load_users(),
         processes: Vec::new(),
         tick: 0,
+        hist_cpu: VecDeque::with_capacity(HISTORY),
+        hist_mem: VecDeque::with_capacity(HISTORY),
+        hist_disk: HashMap::new(),
+        hist_net_rx: HashMap::new(),
+        hist_net_tx: HashMap::new(),
+        last_cpu: 0.0,
+        last_cores: 0,
+        last_proc_count: 0,
+        last_mem_total: 0,
+        last_mem_used: 0,
+        last_disks: Vec::new(),
+        last_nets: Vec::new(),
+        card_keys: Vec::new(),
+        perf_model,
         filter: String::new(),
         visible_pids: Vec::new(),
         rows_model,
@@ -140,6 +193,18 @@ fn main() -> Result<(), slint::PlatformError> {
                 return;
             }
             app.set_status_text(do_process_action(pid, &action).into());
+        });
+    }
+
+    // --- Performans callbacks ---
+    {
+        let state = state.clone();
+        let weak = app.as_weak();
+        app.on_perf_select(move |idx| {
+            let Some(app) = weak.upgrade() else { return };
+            app.set_perf_selected(idx);
+            let mut st = state.borrow_mut();
+            rebuild_perf(&app, &mut st);
         });
     }
 
@@ -342,46 +407,212 @@ fn run_service_action(app: &MainWindow, st: &AppState, row: i32, action: Service
     });
 }
 
-fn apply_snapshot(app: &MainWindow, st: &mut AppState, snap: Snapshot) {
-    if st.history.len() >= HISTORY {
-        st.history.pop_front();
+fn push_capped(series: &mut VecDeque<f32>, value: f32) {
+    if series.len() >= HISTORY {
+        series.pop_front();
     }
-    st.history.push_back(snap.cpu_percent);
+    series.push_back(value);
+}
 
-    let (line, fill) = cpu_paths(&st.history);
-    app.set_cpu_line(line.into());
-    app.set_cpu_fill(fill.into());
-    app.set_cpu_text(format!("%{:.0}", snap.cpu_percent).into());
-    app.set_cpu_detail(
-        format!(
-            "{} işlem • {} çekirdek • son {} sn",
-            snap.processes.len(),
-            snap.per_core.len(),
-            HISTORY
-        )
-        .into(),
-    );
-    app.set_core_loads(ModelRc::new(VecModel::from(snap.per_core.clone())));
+fn apply_snapshot(app: &MainWindow, st: &mut AppState, snap: Snapshot) {
+    let Snapshot {
+        cpu_percent,
+        per_core,
+        mem_total,
+        mem_used,
+        disks,
+        nets,
+        processes,
+    } = snap;
 
-    let frac = if snap.mem_total > 0 {
-        snap.mem_used as f32 / snap.mem_total as f32
+    st.last_cpu = cpu_percent;
+    st.last_cores = per_core.len();
+    st.last_proc_count = processes.iter().filter(|p| !p.kernel).count();
+    push_capped(&mut st.hist_cpu, cpu_percent);
+
+    let frac = if mem_total > 0 {
+        mem_used as f32 / mem_total as f32
     } else {
         0.0
     };
+    st.last_mem_total = mem_total;
+    st.last_mem_used = mem_used;
+    push_capped(&mut st.hist_mem, 100.0 * frac);
     app.set_mem_fraction(frac);
-    app.set_mem_text(
-        format!(
-            "{} / {} kullanımda (%{:.0})",
-            fmt_bytes(snap.mem_used),
-            fmt_bytes(snap.mem_total),
-            100.0 * frac
-        )
-        .into(),
-    );
+    app.set_core_loads(ModelRc::new(VecModel::from(per_core)));
 
-    st.processes = snap.processes;
+    st.hist_disk.retain(|k, _| disks.iter().any(|d| &d.name == k));
+    for d in &disks {
+        push_capped(st.hist_disk.entry(d.name.clone()).or_default(), d.busy_percent);
+    }
+    st.hist_net_rx.retain(|k, _| nets.iter().any(|n| &n.name == k));
+    st.hist_net_tx.retain(|k, _| nets.iter().any(|n| &n.name == k));
+    for n in &nets {
+        push_capped(st.hist_net_rx.entry(n.name.clone()).or_default(), n.rx_bps as f32);
+        push_capped(st.hist_net_tx.entry(n.name.clone()).or_default(), n.tx_bps as f32);
+    }
+    st.last_disks = disks;
+    st.last_nets = nets;
+
+    st.processes = processes;
     refresh_table(app, st);
     refresh_details(app, st);
+    rebuild_perf(app, st);
+}
+
+/// Rebuild the Performance page: resource cards on the left, selected detail on the right.
+fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
+    let mut cards: Vec<PerfCard> = Vec::new();
+    let mut keys: Vec<CardKey> = Vec::new();
+
+    cards.push(PerfCard {
+        title: "CPU".into(),
+        value: format!("%{:.0}", st.last_cpu).into(),
+        line: series_paths(&st.hist_cpu, 100.0).0.into(),
+        color: BLUE,
+    });
+    keys.push(CardKey::Cpu);
+
+    let mem_pct = st.hist_mem.back().copied().unwrap_or(0.0);
+    cards.push(PerfCard {
+        title: "Bellek".into(),
+        value: format!(
+            "{}/{} (%{:.0})",
+            fmt_bytes(st.last_mem_used),
+            fmt_bytes(st.last_mem_total),
+            mem_pct
+        )
+        .into(),
+        line: series_paths(&st.hist_mem, 100.0).0.into(),
+        color: PURPLE,
+    });
+    keys.push(CardKey::Mem);
+
+    for d in &st.last_disks {
+        let line = st
+            .hist_disk
+            .get(&d.name)
+            .map(|h| series_paths(h, 100.0).0)
+            .unwrap_or_default();
+        cards.push(PerfCard {
+            title: format!("Disk ({})", d.name).into(),
+            value: format!("%{:.0}", d.busy_percent).into(),
+            line: line.into(),
+            color: GREEN,
+        });
+        keys.push(CardKey::Disk(d.name.clone()));
+    }
+
+    for n in &st.last_nets {
+        let combined: VecDeque<f32> = match (st.hist_net_rx.get(&n.name), st.hist_net_tx.get(&n.name))
+        {
+            (Some(rx), Some(tx)) => rx.iter().zip(tx.iter()).map(|(a, b)| a + b).collect(),
+            _ => VecDeque::new(),
+        };
+        let scale = combined.iter().copied().fold(MIN_NET_SCALE, f32::max);
+        cards.push(PerfCard {
+            title: format!("Ağ ({})", n.name).into(),
+            value: fmt_rate(n.rx_bps + n.tx_bps).into(),
+            line: series_paths(&combined, scale).0.into(),
+            color: ORANGE,
+        });
+        keys.push(CardKey::Net(n.name.clone()));
+    }
+
+    let count = cards.len() as i32;
+    st.card_keys = keys;
+    st.perf_model.set_vec(cards);
+    let sel = app.get_perf_selected().clamp(0, (count - 1).max(0));
+    app.set_perf_selected(sel);
+
+    let empty = SharedString::default();
+    match st.card_keys.get(sel as usize) {
+        Some(CardKey::Cpu) => {
+            let (line, fill) = series_paths(&st.hist_cpu, 100.0);
+            app.set_perf_title("CPU".into());
+            app.set_perf_value(format!("%{:.0}", st.last_cpu).into());
+            app.set_perf_sub1(
+                format!("{} işlem • {} çekirdek", st.last_proc_count, st.last_cores).into(),
+            );
+            app.set_perf_sub2(format!("Kullanım (%) • son {HISTORY} sn • çekirdek başına yük aşağıda").into());
+            app.set_perf_line(line.into());
+            app.set_perf_fill(fill.into());
+            app.set_perf_line2(empty);
+            app.set_perf_color(BLUE);
+        }
+        Some(CardKey::Mem) => {
+            let (line, fill) = series_paths(&st.hist_mem, 100.0);
+            app.set_perf_title("Bellek".into());
+            app.set_perf_value(format!("%{:.0}", st.hist_mem.back().copied().unwrap_or(0.0)).into());
+            app.set_perf_sub1(
+                format!(
+                    "{} / {} kullanımda",
+                    fmt_bytes(st.last_mem_used),
+                    fmt_bytes(st.last_mem_total)
+                )
+                .into(),
+            );
+            app.set_perf_sub2(format!("Kullanım (%) • son {HISTORY} sn").into());
+            app.set_perf_line(line.into());
+            app.set_perf_fill(fill.into());
+            app.set_perf_line2(empty);
+            app.set_perf_color(PURPLE);
+        }
+        Some(CardKey::Disk(name)) => {
+            let hist = st.hist_disk.get(name);
+            let (line, fill) = hist
+                .map(|h| series_paths(h, 100.0))
+                .unwrap_or_default();
+            let d = st.last_disks.iter().find(|d| &d.name == name);
+            app.set_perf_title(format!("Disk ({name})").into());
+            app.set_perf_value(
+                format!("%{:.0}", d.map(|d| d.busy_percent).unwrap_or(0.0)).into(),
+            );
+            app.set_perf_sub1(
+                format!(
+                    "Okuma {} • Yazma {}",
+                    fmt_rate(d.map(|d| d.read_bps).unwrap_or(0.0)),
+                    fmt_rate(d.map(|d| d.write_bps).unwrap_or(0.0))
+                )
+                .into(),
+            );
+            app.set_perf_sub2(format!("Etkin süre (%) • son {HISTORY} sn").into());
+            app.set_perf_line(line.into());
+            app.set_perf_fill(fill.into());
+            app.set_perf_line2(empty);
+            app.set_perf_color(GREEN);
+        }
+        Some(CardKey::Net(name)) => {
+            let rx = st.hist_net_rx.get(name);
+            let tx = st.hist_net_tx.get(name);
+            let scale = rx
+                .into_iter()
+                .chain(tx)
+                .flat_map(|h| h.iter().copied())
+                .fold(MIN_NET_SCALE, f32::max);
+            let (line, fill) = rx.map(|h| series_paths(h, scale)).unwrap_or_default();
+            let (line2, _) = tx.map(|h| series_paths(h, scale)).unwrap_or_default();
+            let n = st.last_nets.iter().find(|n| &n.name == name);
+            app.set_perf_title(format!("Ağ ({name})").into());
+            app.set_perf_value(
+                fmt_rate(n.map(|n| n.rx_bps + n.tx_bps).unwrap_or(0.0)).into(),
+            );
+            app.set_perf_sub1(
+                format!(
+                    "Alma {} • Gönderme {} (soluk çizgi)",
+                    fmt_rate(n.map(|n| n.rx_bps).unwrap_or(0.0)),
+                    fmt_rate(n.map(|n| n.tx_bps).unwrap_or(0.0))
+                )
+                .into(),
+            );
+            app.set_perf_sub2(format!("Ölçek: {} • son {HISTORY} sn", fmt_rate(scale as f64)).into());
+            app.set_perf_line(line.into());
+            app.set_perf_fill(fill.into());
+            app.set_perf_line2(line2.into());
+            app.set_perf_color(ORANGE);
+        }
+        None => {}
+    }
 }
 
 fn refresh_table(app: &MainWindow, st: &mut AppState) {
@@ -595,9 +826,10 @@ fn state_label(state: char) -> &'static str {
     }
 }
 
-fn cpu_paths(history: &VecDeque<f32>) -> (String, String) {
+/// Build SVG path commands for a series scaled to `max` (line, filled area).
+fn series_paths(history: &VecDeque<f32>, max: f32) -> (String, String) {
     let n = history.len();
-    if n < 2 {
+    if n < 2 || max <= 0.0 {
         return (String::new(), String::new());
     }
     let step = VIEW_W / (HISTORY as f32 - 1.0);
@@ -605,7 +837,7 @@ fn cpu_paths(history: &VecDeque<f32>) -> (String, String) {
     let mut line = String::new();
     for (i, v) in history.iter().enumerate() {
         let x = left + i as f32 * step;
-        let y = (VIEW_H - v.clamp(0.0, 100.0) * VIEW_H / 100.0).clamp(0.0, VIEW_H);
+        let y = (VIEW_H - (v / max).clamp(0.0, 1.0) * VIEW_H).clamp(0.0, VIEW_H);
         if i == 0 {
             line.push_str(&format!("M {x:.1} {y:.1} "));
         } else {
@@ -624,5 +856,18 @@ fn fmt_bytes(bytes: u64) -> String {
         format!("{:.1} GB", b / GB)
     } else {
         format!("{:.1} MB", b / MB)
+    }
+}
+
+fn fmt_rate(bps: f64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    if bps >= GB {
+        format!("{:.1} GB/s", bps / GB)
+    } else if bps >= MB {
+        format!("{:.1} MB/s", bps / MB)
+    } else {
+        format!("{:.0} KB/s", bps / KB)
     }
 }

@@ -5,8 +5,10 @@
 
 mod services;
 mod startup;
+mod stats;
 pub use services::{list_services, service_action, ServiceAction, ServiceInfo};
 pub use startup::{list_startup, set_startup_enabled, StartupEntry};
+pub use stats::{DiskStats, NetStats};
 
 use std::collections::HashMap;
 use std::fs;
@@ -47,6 +49,8 @@ pub struct Snapshot {
     pub per_core: Vec<f32>,
     pub mem_total: u64,
     pub mem_used: u64,
+    pub disks: Vec<DiskStats>,
+    pub nets: Vec<NetStats>,
     pub processes: Vec<ProcessInfo>,
 }
 
@@ -63,6 +67,7 @@ pub struct Sampler {
     /// pid -> utime+stime jiffies at the previous sample.
     prev_proc: HashMap<i32, u64>,
     page_size: u64,
+    io: stats::IoSampler,
 }
 
 impl Sampler {
@@ -72,6 +77,7 @@ impl Sampler {
             prev_cores: Vec::new(),
             prev_proc: HashMap::new(),
             page_size: page_size(),
+            io: stats::IoSampler::new(),
         }
     }
 
@@ -152,11 +158,15 @@ impl Sampler {
         }
         self.prev_proc = next_prev;
 
+        let (disks, nets) = self.io.sample();
+
         Snapshot {
             cpu_percent,
             per_core,
             mem_total,
             mem_used,
+            disks,
+            nets,
             processes,
         }
     }

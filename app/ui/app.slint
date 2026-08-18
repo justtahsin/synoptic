@@ -1,5 +1,12 @@
 import { StandardTableView, LineEdit, Button, Palette } from "std-widgets.slint";
 
+export struct PerfCard {
+    title: string,
+    value: string,
+    line: string,
+    color: color,
+}
+
 component NavItem inherits Rectangle {
     in property <string> label;
     in property <string> glyph;
@@ -57,12 +64,17 @@ export component MainWindow inherits Window {
     in-out property <string> status-text;
 
     // Performans
-    in-out property <string> cpu-line;
-    in-out property <string> cpu-fill;
-    in-out property <string> cpu-text: "%0";
-    in-out property <string> cpu-detail;
+    in-out property <[PerfCard]> perf-cards;
+    in-out property <int> perf-selected: 0;
+    in-out property <string> perf-title;
+    in-out property <string> perf-value;
+    in-out property <string> perf-sub1;
+    in-out property <string> perf-sub2;
+    in-out property <string> perf-line;
+    in-out property <string> perf-fill;
+    in-out property <string> perf-line2;
+    in-out property <color> perf-color: #0067C0;
     in-out property <[float]> core-loads;
-    in-out property <string> mem-text;
     in-out property <float> mem-fraction;
 
     // Başlangıç
@@ -84,6 +96,7 @@ export component MainWindow inherits Window {
     callback search-edited(string);
     callback sort-ascending(int);
     callback sort-descending(int);
+    callback perf-select(int);
     callback startup-enable(int);
     callback startup-disable(int);
     callback detail-action(string, int);
@@ -230,72 +243,119 @@ export component MainWindow inherits Window {
             // ---- Performans ----
             Rectangle {
                 visible: root.page == 1;
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 10px;
-                    Text { text: "CPU"; font-size: 20px; font-weight: 600; }
-                    HorizontalLayout {
-                        spacing: 12px;
-                        Text { text: root.cpu-text; font-size: 34px; }
-                        Text {
-                            text: root.cpu-detail;
-                            font-size: 12px;
-                            opacity: 0.7;
-                            vertical-alignment: bottom;
-                        }
-                    }
-                    Rectangle {
-                        vertical-stretch: 1;
-                        border-width: 1px;
-                        border-color: #0067C066;
-                        border-radius: 4px;
-                        clip: true;
-                        Path {
-                            commands: root.cpu-fill;
-                            viewbox-width: 600;
-                            viewbox-height: 100;
-                            fill: #0067C022;
-                        }
-                        Path {
-                            commands: root.cpu-line;
-                            viewbox-width: 600;
-                            viewbox-height: 100;
-                            stroke: #0067C0;
-                            stroke-width: 1.5px;
-                        }
-                    }
-                    Text {
-                        text: "Çekirdek başına anlık yük";
-                        font-size: 12px;
-                        opacity: 0.7;
-                    }
-                    HorizontalLayout {
-                        height: 46px;
-                        spacing: 3px;
-                        for load in root.core-loads: Rectangle {
-                            background: #80808022;
-                            border-radius: 2px;
-                            Rectangle {
-                                y: parent.height * (1 - load / 100);
-                                height: parent.height * load / 100;
-                                border-radius: 2px;
-                                background: #0067C0;
+                HorizontalLayout {
+                    padding: 12px;
+                    spacing: 14px;
+                    VerticalLayout {
+                        width: 250px;
+                        spacing: 6px;
+                        alignment: start;
+                        for card[index] in root.perf-cards: Rectangle {
+                            height: 64px;
+                            border-radius: 6px;
+                            background: root.perf-selected == index ? #80808033 : (card-touch.has-hover ? #8080801a : transparent);
+                            card-touch := TouchArea {
+                                clicked => { root.perf-select(index); }
+                            }
+                            HorizontalLayout {
+                                padding: 8px;
+                                spacing: 10px;
+                                Rectangle {
+                                    width: 86px;
+                                    border-width: 1px;
+                                    border-color: card.color;
+                                    border-radius: 3px;
+                                    clip: true;
+                                    Path {
+                                        commands: card.line;
+                                        viewbox-width: 600;
+                                        viewbox-height: 100;
+                                        stroke: card.color;
+                                        stroke-width: 2.5px;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text { text: card.title; font-size: 13px; }
+                                    Text { text: card.value; font-size: 12px; opacity: 0.7; }
+                                }
                             }
                         }
                     }
-                    Text { text: "Bellek"; font-size: 20px; font-weight: 600; }
-                    Rectangle {
-                        height: 22px;
-                        border-radius: 4px;
-                        background: #80808022;
+                    VerticalLayout {
+                        spacing: 10px;
+                        Text { text: root.perf-title; font-size: 20px; font-weight: 600; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: root.perf-value; font-size: 34px; color: root.perf-color; }
+                            Text {
+                                text: root.perf-sub1;
+                                font-size: 12px;
+                                opacity: 0.7;
+                                vertical-alignment: bottom;
+                            }
+                        }
                         Rectangle {
-                            x: 0;
-                            width: parent.width * root.mem-fraction;
+                            vertical-stretch: 1;
+                            border-width: 1px;
+                            border-color: root.perf-color.with-alpha(0.4);
                             border-radius: 4px;
-                            background: #9A48D0;
+                            clip: true;
+                            Path {
+                                commands: root.perf-fill;
+                                viewbox-width: 600;
+                                viewbox-height: 100;
+                                fill: root.perf-color.with-alpha(0.13);
+                            }
+                            Path {
+                                commands: root.perf-line;
+                                viewbox-width: 600;
+                                viewbox-height: 100;
+                                stroke: root.perf-color;
+                                stroke-width: 1.5px;
+                            }
+                            Path {
+                                commands: root.perf-line2;
+                                viewbox-width: 600;
+                                viewbox-height: 100;
+                                stroke: root.perf-color.with-alpha(0.5);
+                                stroke-width: 1.5px;
+                            }
+                        }
+                        Text {
+                            text: root.perf-sub2;
+                            font-size: 12px;
+                            opacity: 0.7;
+                        }
+                        if root.perf-selected == 0: Rectangle {
+                            height: 46px;
+                            HorizontalLayout {
+                                spacing: 3px;
+                                for load in root.core-loads: Rectangle {
+                                    background: #80808022;
+                                    border-radius: 2px;
+                                    Rectangle {
+                                        y: parent.height * (1 - load / 100);
+                                        height: parent.height * load / 100;
+                                        border-radius: 2px;
+                                        background: #0067C0;
+                                    }
+                                }
+                            }
+                        }
+                        if root.perf-selected == 1: Rectangle {
+                            height: 22px;
+                            border-radius: 4px;
+                            background: #80808022;
+                            Rectangle {
+                                x: 0;
+                                width: parent.width * root.mem-fraction;
+                                border-radius: 4px;
+                                background: #9A48D0;
+                            }
                         }
                     }
-                    Text { text: root.mem-text; font-size: 13px; }
                 }
             }
 
