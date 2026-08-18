@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Synoptic
+GenericName=Task Manager
+GenericName[tr]=Görev Yöneticisi
+Comment=The familiar task manager for Linux
+Comment[tr]=Linux için tanıdık görev yöneticisi
+Exec=synoptic
+Icon=io.github.justtahsin.Synoptic
+Terminal=false
+Categories=System;Monitor;
+Keywords=task;manager;process;monitor;system;cpu;memory;görev;yönetici;
+StartupWMClass=io.github.justtahsin.Synoptic
