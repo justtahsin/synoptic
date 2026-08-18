@@ -3,6 +3,9 @@
 //! Reads system and per-process metrics from /proc. Designed to be cheap
 //! enough to call once per second.
 
+mod services;
+pub use services::{list_services, service_action, ServiceAction, ServiceInfo};
+
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -27,6 +30,12 @@ pub struct ProcessInfo {
     /// Resident set size in bytes (RSS; cheap but approximate - PSS comes later).
     pub mem_bytes: u64,
     pub group: Group,
+    /// Scheduler state letter from /proc/pid/stat (R, S, D, Z, T, I...).
+    pub state: char,
+    pub uid: u32,
+    /// Kernel thread (empty cmdline). Hidden in the grouped process view,
+    /// visible in the details view.
+    pub kernel: bool,
 }
 
 /// A single sampling pass over the whole system.
@@ -133,6 +142,9 @@ impl Sampler {
                     cpu_percent: cpu_p,
                     mem_bytes: raw.mem_bytes,
                     group,
+                    state: raw.state,
+                    uid,
+                    kernel: raw.kernel,
                 });
             }
         }
@@ -156,7 +168,16 @@ impl Default for Sampler {
 
 /// Send SIGTERM: the graceful "End task" equivalent.
 pub fn terminate(pid: i32) -> std::io::Result<()> {
-    let ret = unsafe { libc::kill(pid, libc::SIGTERM) };
+    send_signal(pid, libc::SIGTERM)
+}
+
+/// Send SIGKILL: the forceful equivalent, for stuck processes.
+pub fn force_kill(pid: i32) -> std::io::Result<()> {
+    send_signal(pid, libc::SIGKILL)
+}
+
+fn send_signal(pid: i32, signal: i32) -> std::io::Result<()> {
+    let ret = unsafe { libc::kill(pid, signal) };
     if ret == 0 {
         Ok(())
     } else {
@@ -164,20 +185,39 @@ pub fn terminate(pid: i32) -> std::io::Result<()> {
     }
 }
 
+/// uid -> username map from /etc/passwd (call once, cache in the UI).
+pub fn load_users() -> HashMap<u32, String> {
+    let mut users = HashMap::new();
+    if let Ok(text) = fs::read_to_string("/etc/passwd") {
+        for line in text.lines() {
+            let mut fields = line.split(':');
+            let (Some(name), Some(_), Some(uid)) = (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if let Ok(uid) = uid.parse() {
+                users.insert(uid, name.to_string());
+            }
+        }
+    }
+    users
+}
+
 struct RawProc {
     name: String,
     jiffies: u64,
     mem_bytes: u64,
     in_app_slice: bool,
+    state: char,
+    kernel: bool,
 }
 
 fn read_process(pid: i32, page_size: u64) -> Option<RawProc> {
     let base = format!("/proc/{pid}");
-    // Kernel threads have an empty cmdline; hide them like the Windows process view does.
-    let cmdline = fs::read(format!("{base}/cmdline")).ok()?;
-    if cmdline.is_empty() {
-        return None;
-    }
+    // Kernel threads have an empty cmdline.
+    let kernel = fs::read(format!("{base}/cmdline"))
+        .map(|c| c.is_empty())
+        .unwrap_or(true);
     let stat = fs::read_to_string(format!("{base}/stat")).ok()?;
     // comm may contain spaces and parentheses: parse around the *last* ')'.
     let open = stat.find('(')?;
@@ -185,6 +225,7 @@ fn read_process(pid: i32, page_size: u64) -> Option<RawProc> {
     let name = stat.get(open + 1..close)?.to_string();
     let rest: Vec<&str> = stat.get(close + 1..)?.split_ascii_whitespace().collect();
     // Fields after comm: rest[0] is state (field 3), so utime (field 14) is rest[11].
+    let state = rest.first()?.chars().next().unwrap_or('?');
     let utime: u64 = rest.get(11)?.parse().ok()?;
     let stime: u64 = rest.get(12)?.parse().ok()?;
     let statm = fs::read_to_string(format!("{base}/statm")).ok()?;
@@ -198,6 +239,8 @@ fn read_process(pid: i32, page_size: u64) -> Option<RawProc> {
         jiffies: utime + stime,
         mem_bytes: resident_pages * page_size,
         in_app_slice,
+        state,
+        kernel,
     })
 }
 

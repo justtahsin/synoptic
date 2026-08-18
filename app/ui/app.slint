@@ -43,14 +43,19 @@ component NavItem inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "Görev Yöneticisi — PoC";
-    preferred-width: 960px;
-    preferred-height: 640px;
-    min-width: 720px;
-    min-height: 480px;
+    preferred-width: 1000px;
+    preferred-height: 680px;
+    min-width: 760px;
+    min-height: 500px;
 
     in-out property <int> page: 0;
+
+    // İşlemler
     in-out property <[[StandardListViewItem]]> process-rows;
     in-out property <int> selected-row <=> table.current-row;
+    in-out property <string> status-text;
+
+    // Performans
     in-out property <string> cpu-line;
     in-out property <string> cpu-fill;
     in-out property <string> cpu-text: "%0";
@@ -58,12 +63,30 @@ export component MainWindow inherits Window {
     in-out property <[float]> core-loads;
     in-out property <string> mem-text;
     in-out property <float> mem-fraction;
-    in-out property <string> status-text;
+
+    // Ayrıntılar
+    in-out property <[[StandardListViewItem]]> detail-rows;
+    in-out property <int> detail-selected-row <=> details.current-row;
+    in-out property <string> detail-status;
+
+    // Hizmetler
+    in-out property <[[StandardListViewItem]]> service-rows;
+    in-out property <int> service-selected-row <=> services.current-row;
+    in-out property <string> service-status;
 
     callback kill-requested(int);
     callback search-edited(string);
     callback sort-ascending(int);
     callback sort-descending(int);
+    callback detail-kill(int);
+    callback detail-force-kill(int);
+    callback detail-search-edited(string);
+    callback detail-sort-ascending(int);
+    callback detail-sort-descending(int);
+    callback service-start(int);
+    callback service-stop(int);
+    callback service-restart(int);
+    callback service-search-edited(string);
 
     HorizontalLayout {
         Rectangle {
@@ -84,6 +107,18 @@ export component MainWindow inherits Window {
                     active: root.page == 1;
                     activated => { root.page = 1; }
                 }
+                NavItem {
+                    label: "Ayrıntılar";
+                    glyph: "#";
+                    active: root.page == 2;
+                    activated => { root.page = 2; }
+                }
+                NavItem {
+                    label: "Hizmetler";
+                    glyph: "⚙";
+                    active: root.page == 3;
+                    activated => { root.page = 3; }
+                }
                 Rectangle { }
                 Text {
                     text: "PoC — Rust + Slint";
@@ -97,6 +132,7 @@ export component MainWindow inherits Window {
         Rectangle {
             background: Palette.background;
 
+            // ---- İşlemler ----
             Rectangle {
                 visible: root.page == 0;
                 VerticalLayout {
@@ -134,6 +170,7 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // ---- Performans ----
             Rectangle {
                 visible: root.page == 1;
                 VerticalLayout {
@@ -202,6 +239,95 @@ export component MainWindow inherits Window {
                         }
                     }
                     Text { text: root.mem-text; font-size: 13px; }
+                }
+            }
+
+            // ---- Ayrıntılar ----
+            Rectangle {
+                visible: root.page == 2;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        LineEdit {
+                            placeholder-text: "Ada veya PID'ye göre ara";
+                            edited(text) => { root.detail-search-edited(text); }
+                        }
+                        Button {
+                            text: "Sonlandır";
+                            enabled: details.current-row >= 0;
+                            clicked => { root.detail-kill(details.current-row); }
+                        }
+                        Button {
+                            text: "Zorla sonlandır";
+                            enabled: details.current-row >= 0;
+                            clicked => { root.detail-force-kill(details.current-row); }
+                        }
+                    }
+                    details := StandardTableView {
+                        columns: [
+                            { title: "PID", horizontal-stretch: 1 },
+                            { title: "Ad", horizontal-stretch: 3 },
+                            { title: "Durum", horizontal-stretch: 1 },
+                            { title: "Kullanıcı", horizontal-stretch: 1 },
+                            { title: "CPU", horizontal-stretch: 1 },
+                            { title: "Bellek", horizontal-stretch: 1 },
+                        ];
+                        rows: root.detail-rows;
+                        sort-ascending(index) => { root.detail-sort-ascending(index); }
+                        sort-descending(index) => { root.detail-sort-descending(index); }
+                    }
+                    Text {
+                        text: root.detail-status;
+                        font-size: 12px;
+                        opacity: 0.7;
+                    }
+                }
+            }
+
+            // ---- Hizmetler ----
+            Rectangle {
+                visible: root.page == 3;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        LineEdit {
+                            placeholder-text: "Hizmet adına göre ara";
+                            edited(text) => { root.service-search-edited(text); }
+                        }
+                        Button {
+                            text: "Başlat";
+                            enabled: services.current-row >= 0;
+                            clicked => { root.service-start(services.current-row); }
+                        }
+                        Button {
+                            text: "Durdur";
+                            enabled: services.current-row >= 0;
+                            clicked => { root.service-stop(services.current-row); }
+                        }
+                        Button {
+                            text: "Yeniden başlat";
+                            enabled: services.current-row >= 0;
+                            clicked => { root.service-restart(services.current-row); }
+                        }
+                    }
+                    services := StandardTableView {
+                        columns: [
+                            { title: "Ad", horizontal-stretch: 2 },
+                            { title: "Durum", horizontal-stretch: 1 },
+                            { title: "Alt durum", horizontal-stretch: 1 },
+                            { title: "Açıklama", horizontal-stretch: 3 },
+                        ];
+                        rows: root.service-rows;
+                    }
+                    Text {
+                        text: root.service-status;
+                        font-size: 12px;
+                        opacity: 0.7;
+                    }
                 }
             }
         }

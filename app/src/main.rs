@@ -1,10 +1,11 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use slint::{ModelRc, SharedString, StandardListViewItem, Timer, TimerMode, VecModel};
-use taskman_core::{Group, ProcessInfo, Sampler, Snapshot};
+use taskman_core::{Group, ProcessInfo, Sampler, ServiceAction, ServiceInfo, Snapshot};
 
 slint::include_modules!();
 
@@ -13,41 +14,74 @@ const HISTORY: usize = 60;
 /// Virtual coordinate space of the graph paths (matches the .slint viewbox).
 const VIEW_W: f32 = 600.0;
 const VIEW_H: f32 = 100.0;
+/// Refresh the service list every N sampling ticks.
+const SERVICE_REFRESH_TICKS: u32 = 5;
 
-/// Table columns, by index: Ad, PID, CPU, Bellek.
-const COL_NAME: i32 = 0;
-const COL_PID: i32 = 1;
-const COL_MEM: i32 = 3;
+/// Set by worker threads after a service action so the next tick re-lists.
+static REFRESH_SERVICES: AtomicBool = AtomicBool::new(false);
 
 struct AppState {
     sampler: Sampler,
     history: VecDeque<f32>,
-    filter: String,
+    users: HashMap<u32, String>,
     processes: Vec<ProcessInfo>,
-    /// pid for each currently visible table row; -1 marks a group header row.
+    tick: u32,
+
+    // İşlemler (grouped view)
+    filter: String,
+    /// pid for each visible row; -1 marks a group header row.
     visible_pids: Vec<i32>,
-    /// Reused row model: updated in place instead of being recreated every tick.
     rows_model: Rc<VecModel<ModelRc<StandardListViewItem>>>,
     sort_col: i32,
     sort_asc: bool,
+
+    // Ayrıntılar (flat view, includes kernel threads and other users)
+    d_filter: String,
+    d_pids: Vec<i32>,
+    d_rows_model: Rc<VecModel<ModelRc<StandardListViewItem>>>,
+    d_sort_col: i32,
+    d_sort_asc: bool,
+
+    // Hizmetler
+    services: Vec<ServiceInfo>,
+    s_filter: String,
+    s_names: Vec<String>,
+    s_rows_model: Rc<VecModel<ModelRc<StandardListViewItem>>>,
 }
 
 fn main() -> Result<(), slint::PlatformError> {
     let app = MainWindow::new()?;
+
     let rows_model = Rc::new(VecModel::default());
     app.set_process_rows(ModelRc::from(rows_model.clone()));
+    let d_rows_model = Rc::new(VecModel::default());
+    app.set_detail_rows(ModelRc::from(d_rows_model.clone()));
+    let s_rows_model = Rc::new(VecModel::default());
+    app.set_service_rows(ModelRc::from(s_rows_model.clone()));
 
     let state = Rc::new(RefCell::new(AppState {
         sampler: Sampler::new(),
         history: VecDeque::with_capacity(HISTORY),
-        filter: String::new(),
+        users: taskman_core::load_users(),
         processes: Vec::new(),
+        tick: 0,
+        filter: String::new(),
         visible_pids: Vec::new(),
         rows_model,
         sort_col: 2, // CPU
         sort_asc: false,
+        d_filter: String::new(),
+        d_pids: Vec::new(),
+        d_rows_model,
+        d_sort_col: 4, // CPU
+        d_sort_asc: false,
+        services: Vec::new(),
+        s_filter: String::new(),
+        s_names: Vec::new(),
+        s_rows_model,
     }));
 
+    // --- İşlemler callbacks ---
     {
         let state = state.clone();
         let weak = app.as_weak();
@@ -58,7 +92,6 @@ fn main() -> Result<(), slint::PlatformError> {
             refresh_table(&app, &mut st);
         });
     }
-
     {
         let state = state.clone();
         let weak = app.as_weak();
@@ -70,7 +103,6 @@ fn main() -> Result<(), slint::PlatformError> {
             refresh_table(&app, &mut st);
         });
     }
-
     {
         let state = state.clone();
         let weak = app.as_weak();
@@ -82,7 +114,6 @@ fn main() -> Result<(), slint::PlatformError> {
             refresh_table(&app, &mut st);
         });
     }
-
     {
         let state = state.clone();
         let weak = app.as_weak();
@@ -104,11 +135,95 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
+    // --- Ayrıntılar callbacks ---
+    {
+        let state = state.clone();
+        let weak = app.as_weak();
+        app.on_detail_search_edited(move |text| {
+            let Some(app) = weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            st.d_filter = text.trim().to_lowercase();
+            refresh_details(&app, &mut st);
+        });
+    }
+    {
+        let state = state.clone();
+        let weak = app.as_weak();
+        app.on_detail_sort_ascending(move |col| {
+            let Some(app) = weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            st.d_sort_col = col;
+            st.d_sort_asc = true;
+            refresh_details(&app, &mut st);
+        });
+    }
+    {
+        let state = state.clone();
+        let weak = app.as_weak();
+        app.on_detail_sort_descending(move |col| {
+            let Some(app) = weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            st.d_sort_col = col;
+            st.d_sort_asc = false;
+            refresh_details(&app, &mut st);
+        });
+    }
+    {
+        let state = state.clone();
+        let weak = app.as_weak();
+        app.on_detail_kill(move |row| {
+            let Some(app) = weak.upgrade() else { return };
+            let st = state.borrow();
+            detail_signal(&app, &st, row, false);
+        });
+    }
+    {
+        let state = state.clone();
+        let weak = app.as_weak();
+        app.on_detail_force_kill(move |row| {
+            let Some(app) = weak.upgrade() else { return };
+            let st = state.borrow();
+            detail_signal(&app, &st, row, true);
+        });
+    }
+
+    // --- Hizmetler callbacks ---
+    {
+        let state = state.clone();
+        let weak = app.as_weak();
+        app.on_service_search_edited(move |text| {
+            let Some(app) = weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            st.s_filter = text.trim().to_lowercase();
+            refresh_services_table(&app, &mut st);
+        });
+    }
+    for (action, setter) in [
+        (ServiceAction::Start, 0),
+        (ServiceAction::Stop, 1),
+        (ServiceAction::Restart, 2),
+    ] {
+        let state = state.clone();
+        let weak = app.as_weak();
+        let handler = move |row: i32| {
+            let Some(app) = weak.upgrade() else { return };
+            let st = state.borrow();
+            run_service_action(&app, &st, row, action);
+        };
+        match setter {
+            0 => app.on_service_start(handler),
+            1 => app.on_service_stop(handler),
+            _ => app.on_service_restart(handler),
+        }
+    }
+
     // Prime the UI so the window is not empty for the first second.
     {
         let mut st = state.borrow_mut();
         let snap = st.sampler.sample();
         apply_snapshot(&app, &mut st, snap);
+        st.services = taskman_core::list_services();
+        refresh_services_table(&app, &mut st);
     }
 
     let timer = Timer::default();
@@ -120,10 +235,56 @@ fn main() -> Result<(), slint::PlatformError> {
             let mut st = state.borrow_mut();
             let snap = st.sampler.sample();
             apply_snapshot(&app, &mut st, snap);
+            st.tick = st.tick.wrapping_add(1);
+            if st.tick % SERVICE_REFRESH_TICKS == 0
+                || REFRESH_SERVICES.swap(false, Ordering::Relaxed)
+            {
+                st.services = taskman_core::list_services();
+                refresh_services_table(&app, &mut st);
+            }
         });
     }
 
     app.run()
+}
+
+fn detail_signal(app: &MainWindow, st: &AppState, row: i32, force: bool) {
+    let Some(&pid) = st.d_pids.get(row as usize) else {
+        return;
+    };
+    let result = if force {
+        taskman_core::force_kill(pid)
+    } else {
+        taskman_core::terminate(pid)
+    };
+    let signal = if force { "SIGKILL" } else { "SIGTERM" };
+    let msg = match result {
+        Ok(()) => format!("{signal} gönderildi (PID {pid})"),
+        Err(err) => format!("Sonlandırılamadı (PID {pid}): {err}"),
+    };
+    app.set_detail_status(msg.into());
+}
+
+fn run_service_action(app: &MainWindow, st: &AppState, row: i32, action: ServiceAction) {
+    let Some(name) = usize::try_from(row)
+        .ok()
+        .and_then(|r| st.s_names.get(r))
+        .cloned()
+    else {
+        return;
+    };
+    app.set_service_status(format!("{name}: istek gönderildi, yetki gerekiyorsa sorulacak…").into());
+    let weak = app.as_weak();
+    // Blocking systemctl call (may wait on a polkit prompt) goes to a worker thread.
+    std::thread::spawn(move || {
+        let result = taskman_core::service_action(action, &name);
+        REFRESH_SERVICES.store(true, Ordering::Relaxed);
+        let msg = match result {
+            Ok(()) => format!("{name}: işlem tamamlandı"),
+            Err(err) => format!("{name}: {err}"),
+        };
+        let _ = weak.upgrade_in_event_loop(move |app| app.set_service_status(msg.into()));
+    });
 }
 
 fn apply_snapshot(app: &MainWindow, st: &mut AppState, snap: Snapshot) {
@@ -165,6 +326,7 @@ fn apply_snapshot(app: &MainWindow, st: &mut AppState, snap: Snapshot) {
 
     st.processes = snap.processes;
     refresh_table(app, st);
+    refresh_details(app, st);
 }
 
 fn refresh_table(app: &MainWindow, st: &mut AppState) {
@@ -176,6 +338,9 @@ fn refresh_table(app: &MainWindow, st: &mut AppState) {
 
     let mut groups: [Vec<&ProcessInfo>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for p in &st.processes {
+        if p.kernel {
+            continue;
+        }
         if !st.filter.is_empty()
             && !p.name.to_lowercase().contains(&st.filter)
             && !p.pid.to_string().contains(&st.filter)
@@ -194,9 +359,9 @@ fn refresh_table(app: &MainWindow, st: &mut AppState) {
     for g in &mut groups {
         g.sort_by(|a, b| {
             let ord = match col {
-                COL_NAME => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                COL_PID => a.pid.cmp(&b.pid),
-                COL_MEM => a.mem_bytes.cmp(&b.mem_bytes),
+                0 => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                1 => a.pid.cmp(&b.pid),
+                3 => a.mem_bytes.cmp(&b.mem_bytes),
                 _ => a.cpu_percent.total_cmp(&b.cpu_percent),
             };
             if asc {
@@ -217,19 +382,112 @@ fn refresh_table(app: &MainWindow, st: &mut AppState) {
         rows.push(header_row(&format!("{} ({})", TITLES[gi], g.len())));
         pids.push(-1);
         for p in g {
-            rows.push(process_row(p));
+            rows.push(ModelRc::new(VecModel::from(vec![
+                cell(&format!("    {}", p.name)),
+                cell(&p.pid.to_string()),
+                cell(&format!("%{:.1}", p.cpu_percent)),
+                cell(&fmt_bytes(p.mem_bytes)),
+            ])));
             pids.push(p.pid);
         }
     }
     st.visible_pids = pids;
     st.rows_model.set_vec(rows);
 
-    // Restore selection to the same process if it is still visible.
     let new_row = selected_pid
         .and_then(|pid| st.visible_pids.iter().position(|&p| p == pid))
         .map(|i| i as i32)
         .unwrap_or(-1);
     app.set_selected_row(new_row);
+}
+
+fn refresh_details(app: &MainWindow, st: &mut AppState) {
+    let selected_pid = usize::try_from(app.get_detail_selected_row())
+        .ok()
+        .and_then(|row| st.d_pids.get(row).copied());
+
+    let users = &st.users;
+    let mut list: Vec<&ProcessInfo> = st
+        .processes
+        .iter()
+        .filter(|p| {
+            st.d_filter.is_empty()
+                || p.name.to_lowercase().contains(&st.d_filter)
+                || p.pid.to_string().contains(&st.d_filter)
+        })
+        .collect();
+
+    let (col, asc) = (st.d_sort_col, st.d_sort_asc);
+    list.sort_by(|a, b| {
+        let ord = match col {
+            0 => a.pid.cmp(&b.pid),
+            1 => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            2 => a.state.cmp(&b.state),
+            3 => users.get(&a.uid).cmp(&users.get(&b.uid)).then(a.uid.cmp(&b.uid)),
+            5 => a.mem_bytes.cmp(&b.mem_bytes),
+            _ => a.cpu_percent.total_cmp(&b.cpu_percent),
+        };
+        if asc {
+            ord
+        } else {
+            ord.reverse()
+        }
+    });
+
+    let mut rows: Vec<ModelRc<StandardListViewItem>> = Vec::with_capacity(list.len());
+    let mut pids: Vec<i32> = Vec::with_capacity(list.len());
+    for p in &list {
+        let user = users
+            .get(&p.uid)
+            .cloned()
+            .unwrap_or_else(|| p.uid.to_string());
+        rows.push(ModelRc::new(VecModel::from(vec![
+            cell(&p.pid.to_string()),
+            cell(&p.name),
+            cell(state_label(p.state)),
+            cell(&user),
+            cell(&format!("%{:.1}", p.cpu_percent)),
+            cell(&fmt_bytes(p.mem_bytes)),
+        ])));
+        pids.push(p.pid);
+    }
+    st.d_pids = pids;
+    st.d_rows_model.set_vec(rows);
+
+    let new_row = selected_pid
+        .and_then(|pid| st.d_pids.iter().position(|&p| p == pid))
+        .map(|i| i as i32)
+        .unwrap_or(-1);
+    app.set_detail_selected_row(new_row);
+}
+
+fn refresh_services_table(app: &MainWindow, st: &mut AppState) {
+    let selected_name = usize::try_from(app.get_service_selected_row())
+        .ok()
+        .and_then(|row| st.s_names.get(row).cloned());
+
+    let mut rows: Vec<ModelRc<StandardListViewItem>> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for s in &st.services {
+        if !st.s_filter.is_empty() && !s.name.to_lowercase().contains(&st.s_filter) {
+            continue;
+        }
+        rows.push(ModelRc::new(VecModel::from(vec![
+            cell(&s.name),
+            cell(&s.active),
+            cell(&s.sub),
+            cell(&s.description),
+        ])));
+        names.push(s.name.clone());
+    }
+    st.s_names = names;
+    st.s_rows_model.set_vec(rows);
+
+    let new_row = selected_name
+        .and_then(|name| st.s_names.iter().position(|n| *n == name))
+        .map(|i| i as i32)
+        .unwrap_or(-1);
+    app.set_service_selected_row(new_row);
 }
 
 fn cell(text: &str) -> StandardListViewItem {
@@ -240,13 +498,17 @@ fn header_row(title: &str) -> ModelRc<StandardListViewItem> {
     ModelRc::new(VecModel::from(vec![cell(title), cell(""), cell(""), cell("")]))
 }
 
-fn process_row(p: &ProcessInfo) -> ModelRc<StandardListViewItem> {
-    ModelRc::new(VecModel::from(vec![
-        cell(&format!("    {}", p.name)),
-        cell(&p.pid.to_string()),
-        cell(&format!("%{:.1}", p.cpu_percent)),
-        cell(&fmt_bytes(p.mem_bytes)),
-    ]))
+fn state_label(state: char) -> &'static str {
+    match state {
+        'R' => "Çalışıyor",
+        'S' => "Bekliyor",
+        'D' => "Disk G/Ç",
+        'Z' => "Zombi",
+        'T' | 't' => "Durduruldu",
+        'I' => "Boşta",
+        'X' => "Ölü",
+        _ => "-",
+    }
 }
 
 fn cpu_paths(history: &VecDeque<f32>) -> (String, String) {

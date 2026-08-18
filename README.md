@@ -27,6 +27,10 @@ cargo run --release
   - 1 sn aralıkla canlı liste; sütun başlığına tıklayarak sıralama
   - Yazarak arama (ad veya PID)
   - "Görevi sonlandır" (SIGTERM); seçim, liste yeniden sıralansa da **PID ile korunur**
+- **Ayrıntılar**: tüm süreçler (kernel thread'leri ve diğer kullanıcılar dahil);
+  PID/Ad/Durum/Kullanıcı/CPU/Bellek sütunları, sıralama, SIGTERM ve SIGKILL
+- **Hizmetler**: systemd servislerini listeler (5 sn'de bir tazelenir); Başlat /
+  Durdur / Yeniden başlat — yetki gerektiğinde polkit sorar (arayüz asla root çalışmaz)
 - **Performans**
   - Son 60 saniyenin CPU grafiği + çekirdek başına anlık yük çubukları
   - Bellek kullanım çubuğu
