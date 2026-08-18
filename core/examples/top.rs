@@ -1,6 +1,6 @@
 //! Quick sanity check for the sampler: prints the top-5 CPU consumers.
 fn main() {
-    let mut sampler = taskman_core::Sampler::new();
+    let mut sampler = synoptic_core::Sampler::new();
     let _ = sampler.sample();
     std::thread::sleep(std::time::Duration::from_millis(1000));
     let snap = sampler.sample();

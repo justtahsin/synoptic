@@ -70,14 +70,12 @@ impl IoSampler {
                 let stats = match (first, self.prev_disk.get(name)) {
                     (false, Some(prev)) => DiskStats {
                         name: name.to_string(),
-                        read_bps: (cur.read_sectors.saturating_sub(prev.read_sectors) * 512)
-                            as f64
+                        read_bps: (cur.read_sectors.saturating_sub(prev.read_sectors) * 512) as f64
                             / dt,
                         write_bps: (cur.write_sectors.saturating_sub(prev.write_sectors) * 512)
                             as f64
                             / dt,
-                        busy_percent: (cur.io_ms.saturating_sub(prev.io_ms) as f64
-                            / (dt * 10.0))
+                        busy_percent: (cur.io_ms.saturating_sub(prev.io_ms) as f64 / (dt * 10.0))
                             .min(100.0) as f32,
                     },
                     _ => DiskStats {

@@ -1,11 +1,12 @@
 use std::cell::RefCell;
+use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use slint::{Color, ModelRc, SharedString, StandardListViewItem, Timer, TimerMode, VecModel};
-use taskman_core::{
+use synoptic_core::{
     DiskStats, Group, NetStats, ProcessInfo, Sampler, ServiceAction, ServiceInfo, Snapshot,
     StartupEntry,
 };
@@ -116,7 +117,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let state = Rc::new(RefCell::new(AppState {
         sampler: Sampler::new(),
-        users: taskman_core::load_users(),
+        users: synoptic_core::load_users(),
         processes: Vec::new(),
         tick: 0,
         hist_cpu: VecDeque::with_capacity(HISTORY),
@@ -316,9 +317,9 @@ fn main() -> Result<(), slint::PlatformError> {
         let mut st = state.borrow_mut();
         let snap = st.sampler.sample();
         apply_snapshot(&app, &mut st, snap);
-        st.services = taskman_core::list_services();
+        st.services = synoptic_core::list_services();
         refresh_services_table(&app, &mut st);
-        st.startup = taskman_core::list_startup();
+        st.startup = synoptic_core::list_startup();
         refresh_startup_table(&app, &mut st);
     }
 
@@ -326,19 +327,23 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let state = state.clone();
         let weak = app.as_weak();
-        timer.start(TimerMode::Repeated, Duration::from_millis(1000), move || {
-            let Some(app) = weak.upgrade() else { return };
-            let mut st = state.borrow_mut();
-            let snap = st.sampler.sample();
-            apply_snapshot(&app, &mut st, snap);
-            st.tick = st.tick.wrapping_add(1);
-            if st.tick % SERVICE_REFRESH_TICKS == 0
-                || REFRESH_SERVICES.swap(false, Ordering::Relaxed)
-            {
-                st.services = taskman_core::list_services();
-                refresh_services_table(&app, &mut st);
-            }
-        });
+        timer.start(
+            TimerMode::Repeated,
+            Duration::from_millis(1000),
+            move || {
+                let Some(app) = weak.upgrade() else { return };
+                let mut st = state.borrow_mut();
+                let snap = st.sampler.sample();
+                apply_snapshot(&app, &mut st, snap);
+                st.tick = st.tick.wrapping_add(1);
+                if st.tick.is_multiple_of(SERVICE_REFRESH_TICKS)
+                    || REFRESH_SERVICES.swap(false, Ordering::Relaxed)
+                {
+                    st.services = synoptic_core::list_services();
+                    refresh_services_table(&app, &mut st);
+                }
+            },
+        );
     }
 
     app.run()
@@ -351,21 +356,21 @@ fn do_process_action(pid: i32, action: &str) -> String {
         Err(err) => format!("Yapılamadı (PID {pid}): {err}"),
     };
     match action {
-        "term" => signal_result("SIGTERM", taskman_core::terminate(pid)),
-        "kill" => signal_result("SIGKILL", taskman_core::force_kill(pid)),
-        "stop" => signal_result("SIGSTOP (dondur)", taskman_core::stop_process(pid)),
-        "cont" => signal_result("SIGCONT (devam)", taskman_core::continue_process(pid)),
-        "nice-down" => match taskman_core::set_nice_delta(pid, 5) {
+        "term" => signal_result("SIGTERM", synoptic_core::terminate(pid)),
+        "kill" => signal_result("SIGKILL", synoptic_core::force_kill(pid)),
+        "stop" => signal_result("SIGSTOP (dondur)", synoptic_core::stop_process(pid)),
+        "cont" => signal_result("SIGCONT (devam)", synoptic_core::continue_process(pid)),
+        "nice-down" => match synoptic_core::set_nice_delta(pid, 5) {
             Ok(nice) => format!("Öncelik düşürüldü (nice {nice}, PID {pid})"),
             Err(err) => format!("Öncelik değiştirilemedi (PID {pid}): {err}"),
         },
-        "nice-up" => match taskman_core::set_nice_delta(pid, -5) {
+        "nice-up" => match synoptic_core::set_nice_delta(pid, -5) {
             Ok(nice) => format!("Öncelik yükseltildi (nice {nice}, PID {pid})"),
-            Err(err) => format!(
-                "Öncelik yükseltilemedi (PID {pid}): {err} — yükseltmek genelde root ister"
-            ),
+            Err(err) => {
+                format!("Öncelik yükseltilemedi (PID {pid}): {err} — yükseltmek genelde root ister")
+            }
         },
-        "open" => match taskman_core::exe_dir(pid) {
+        "open" => match synoptic_core::exe_dir(pid) {
             Some(dir) => {
                 let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
                 format!("Açılıyor: {}", dir.display())
@@ -377,17 +382,25 @@ fn do_process_action(pid: i32, action: &str) -> String {
 }
 
 fn toggle_startup(app: &MainWindow, st: &mut AppState, row: i32, enable: bool) {
-    let Some(id) = usize::try_from(row).ok().and_then(|r| st.b_ids.get(r)).cloned() else {
+    let Some(id) = usize::try_from(row)
+        .ok()
+        .and_then(|r| st.b_ids.get(r))
+        .cloned()
+    else {
         return;
     };
-    let msg = match taskman_core::set_startup_enabled(&id, enable) {
+    let msg = match synoptic_core::set_startup_enabled(&id, enable) {
         Ok(()) => format!(
             "{id}: {}",
-            if enable { "etkinleştirildi" } else { "devre dışı bırakıldı" }
+            if enable {
+                "etkinleştirildi"
+            } else {
+                "devre dışı bırakıldı"
+            }
         ),
         Err(err) => format!("{id}: yapılamadı — {err}"),
     };
-    st.startup = taskman_core::list_startup();
+    st.startup = synoptic_core::list_startup();
     refresh_startup_table(app, st);
     app.set_startup_status(msg.into());
 }
@@ -400,11 +413,13 @@ fn run_service_action(app: &MainWindow, st: &AppState, row: i32, action: Service
     else {
         return;
     };
-    app.set_service_status(format!("{name}: istek gönderildi, yetki gerekiyorsa sorulacak…").into());
+    app.set_service_status(
+        format!("{name}: istek gönderildi, yetki gerekiyorsa sorulacak…").into(),
+    );
     let weak = app.as_weak();
     // Blocking systemctl call (may wait on a polkit prompt) goes to a worker thread.
     std::thread::spawn(move || {
-        let result = taskman_core::service_action(action, &name);
+        let result = synoptic_core::service_action(action, &name);
         REFRESH_SERVICES.store(true, Ordering::Relaxed);
         let msg = match result {
             Ok(()) => format!("{name}: işlem tamamlandı"),
@@ -448,15 +463,27 @@ fn apply_snapshot(app: &MainWindow, st: &mut AppState, snap: Snapshot) {
     app.set_mem_fraction(frac);
     app.set_core_loads(ModelRc::new(VecModel::from(per_core)));
 
-    st.hist_disk.retain(|k, _| disks.iter().any(|d| &d.name == k));
+    st.hist_disk
+        .retain(|k, _| disks.iter().any(|d| &d.name == k));
     for d in &disks {
-        push_capped(st.hist_disk.entry(d.name.clone()).or_default(), d.busy_percent);
+        push_capped(
+            st.hist_disk.entry(d.name.clone()).or_default(),
+            d.busy_percent,
+        );
     }
-    st.hist_net_rx.retain(|k, _| nets.iter().any(|n| &n.name == k));
-    st.hist_net_tx.retain(|k, _| nets.iter().any(|n| &n.name == k));
+    st.hist_net_rx
+        .retain(|k, _| nets.iter().any(|n| &n.name == k));
+    st.hist_net_tx
+        .retain(|k, _| nets.iter().any(|n| &n.name == k));
     for n in &nets {
-        push_capped(st.hist_net_rx.entry(n.name.clone()).or_default(), n.rx_bps as f32);
-        push_capped(st.hist_net_tx.entry(n.name.clone()).or_default(), n.tx_bps as f32);
+        push_capped(
+            st.hist_net_rx.entry(n.name.clone()).or_default(),
+            n.rx_bps as f32,
+        );
+        push_capped(
+            st.hist_net_tx.entry(n.name.clone()).or_default(),
+            n.tx_bps as f32,
+        );
     }
     st.last_disks = disks;
     st.last_nets = nets;
@@ -512,11 +539,11 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
     }
 
     for n in &st.last_nets {
-        let combined: VecDeque<f32> = match (st.hist_net_rx.get(&n.name), st.hist_net_tx.get(&n.name))
-        {
-            (Some(rx), Some(tx)) => rx.iter().zip(tx.iter()).map(|(a, b)| a + b).collect(),
-            _ => VecDeque::new(),
-        };
+        let combined: VecDeque<f32> =
+            match (st.hist_net_rx.get(&n.name), st.hist_net_tx.get(&n.name)) {
+                (Some(rx), Some(tx)) => rx.iter().zip(tx.iter()).map(|(a, b)| a + b).collect(),
+                _ => VecDeque::new(),
+            };
         let scale = combined.iter().copied().fold(MIN_NET_SCALE, f32::max);
         cards.push(PerfCard {
             title: format!("Ağ ({})", n.name).into(),
@@ -535,7 +562,11 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
 
     let gw = app.get_graph_w();
     let gh = app.get_graph_h();
-    let vbh = if gw > 1.0 && gh > 1.0 { VIEW_W * gh / gw } else { 150.0 };
+    let vbh = if gw > 1.0 && gh > 1.0 {
+        VIEW_W * gh / gw
+    } else {
+        150.0
+    };
     app.set_perf_vbh(vbh);
 
     let empty = SharedString::default();
@@ -547,7 +578,9 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
             app.set_perf_sub1(
                 format!("{} işlem • {} çekirdek", st.last_proc_count, st.last_cores).into(),
             );
-            app.set_perf_sub2(format!("Kullanım (%) • son {HISTORY} sn • çekirdek başına yük aşağıda").into());
+            app.set_perf_sub2(
+                format!("Kullanım (%) • son {HISTORY} sn • çekirdek başına yük aşağıda").into(),
+            );
             app.set_perf_line(line.into());
             app.set_perf_fill(fill.into());
             app.set_perf_line2(empty);
@@ -556,7 +589,9 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
         Some(CardKey::Mem) => {
             let (line, fill) = series_paths(&st.hist_mem, 100.0, vbh);
             app.set_perf_title("Bellek".into());
-            app.set_perf_value(format!("%{:.0}", st.hist_mem.back().copied().unwrap_or(0.0)).into());
+            app.set_perf_value(
+                format!("%{:.0}", st.hist_mem.back().copied().unwrap_or(0.0)).into(),
+            );
             app.set_perf_sub1(
                 format!(
                     "{} / {} kullanımda",
@@ -578,9 +613,7 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
                 .unwrap_or_default();
             let d = st.last_disks.iter().find(|d| &d.name == name);
             app.set_perf_title(format!("Disk ({name})").into());
-            app.set_perf_value(
-                format!("%{:.0}", d.map(|d| d.busy_percent).unwrap_or(0.0)).into(),
-            );
+            app.set_perf_value(format!("%{:.0}", d.map(|d| d.busy_percent).unwrap_or(0.0)).into());
             app.set_perf_sub1(
                 format!(
                     "Okuma {} • Yazma {}",
@@ -607,9 +640,7 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
             let (line2, _) = tx.map(|h| series_paths(h, scale, vbh)).unwrap_or_default();
             let n = st.last_nets.iter().find(|n| &n.name == name);
             app.set_perf_title(format!("Ağ ({name})").into());
-            app.set_perf_value(
-                fmt_rate(n.map(|n| n.rx_bps + n.tx_bps).unwrap_or(0.0)).into(),
-            );
+            app.set_perf_value(fmt_rate(n.map(|n| n.rx_bps + n.tx_bps).unwrap_or(0.0)).into());
             app.set_perf_sub1(
                 format!(
                     "Alma {} • Gönderme {} (soluk çizgi)",
@@ -618,7 +649,9 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
                 )
                 .into(),
             );
-            app.set_perf_sub2(format!("Ölçek: {} • son {HISTORY} sn", fmt_rate(scale as f64)).into());
+            app.set_perf_sub2(
+                format!("Ölçek: {} • son {HISTORY} sn", fmt_rate(scale as f64)).into(),
+            );
             app.set_perf_line(line.into());
             app.set_perf_fill(fill.into());
             app.set_perf_line2(line2.into());
@@ -712,7 +745,11 @@ fn refresh_startup_table(app: &MainWindow, st: &mut AppState) {
             cell(&e.name),
             cell(if e.enabled { "Etkin" } else { "Devre dışı" }),
             cell(&e.exec),
-            cell(if e.user_level { "Kullanıcı" } else { "Sistem" }),
+            cell(if e.user_level {
+                "Kullanıcı"
+            } else {
+                "Sistem"
+            }),
         ])));
         ids.push(e.id.clone());
     }
@@ -808,7 +845,7 @@ fn refresh_users_table(_app: &MainWindow, st: &mut AppState) {
         a.mem += p.mem_bytes;
     }
     let mut list: Vec<(u32, Agg)> = by_uid.into_iter().collect();
-    list.sort_by(|a, b| b.1.mem.cmp(&a.1.mem));
+    list.sort_by_key(|(_, a)| Reverse(a.mem));
     let rows: Vec<ModelRc<StandardListViewItem>> = list
         .iter()
         .map(|(uid, a)| {
@@ -862,7 +899,12 @@ fn cell(text: &str) -> StandardListViewItem {
 }
 
 fn header_row(title: &str) -> ModelRc<StandardListViewItem> {
-    ModelRc::new(VecModel::from(vec![cell(title), cell(""), cell(""), cell("")]))
+    ModelRc::new(VecModel::from(vec![
+        cell(title),
+        cell(""),
+        cell(""),
+        cell(""),
+    ]))
 }
 
 fn state_label(state: char) -> &'static str {

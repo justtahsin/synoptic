@@ -4638,6 +4638,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "synoptic-app"
+version = "0.1.0"
+dependencies = [
+ "slint",
+ "slint-build",
+ "synoptic-core",
+]
+
+[[package]]
+name = "synoptic-core"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "synstructure"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4690,22 +4706,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2972044a9e5e448a506a7ff6f0d03b566d8ef4cd6918a58fc59835a0f8666626"
 dependencies = [
  "pin-project-lite",
-]
-
-[[package]]
-name = "taskman-app"
-version = "0.1.0"
-dependencies = [
- "slint",
- "slint-build",
- "taskman-core",
-]
-
-[[package]]
-name = "taskman-core"
-version = "0.1.0"
-dependencies = [
- "libc",
 ]
 
 [[package]]
