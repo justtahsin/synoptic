@@ -4,7 +4,9 @@
 //! enough to call once per second.
 
 mod services;
+mod startup;
 pub use services::{list_services, service_action, ServiceAction, ServiceInfo};
+pub use startup::{list_startup, set_startup_enabled, StartupEntry};
 
 use std::collections::HashMap;
 use std::fs;
@@ -299,4 +301,44 @@ fn page_size() -> u64 {
     } else {
         4096
     }
+}
+
+/// Send SIGSTOP: freeze a process.
+pub fn stop_process(pid: i32) -> std::io::Result<()> {
+    send_signal(pid, libc::SIGSTOP)
+}
+
+/// Send SIGCONT: resume a frozen process.
+pub fn continue_process(pid: i32) -> std::io::Result<()> {
+    send_signal(pid, libc::SIGCONT)
+}
+
+/// Adjust nice by delta (positive = lower priority). Returns the new nice value.
+/// Raising priority (negative delta) usually needs CAP_SYS_NICE.
+pub fn set_nice_delta(pid: i32, delta: i32) -> std::io::Result<i32> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let close = stat
+        .rfind(')')
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+    // nice is field 19; fields after comm start at index 0 = field 3.
+    let current: i32 = stat[close + 1..]
+        .split_ascii_whitespace()
+        .nth(16)
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+    let new = (current + delta).clamp(-20, 19);
+    let ret = unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, new) };
+    if ret == 0 {
+        Ok(new)
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Directory containing the process executable (readable for own processes).
+pub fn exe_dir(pid: i32) -> Option<std::path::PathBuf> {
+    fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()?
+        .parent()
+        .map(|p| p.to_path_buf())
 }

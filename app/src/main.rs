@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use slint::{ModelRc, SharedString, StandardListViewItem, Timer, TimerMode, VecModel};
-use taskman_core::{Group, ProcessInfo, Sampler, ServiceAction, ServiceInfo, Snapshot};
+use taskman_core::{
+    Group, ProcessInfo, Sampler, ServiceAction, ServiceInfo, Snapshot, StartupEntry,
+};
 
 slint::include_modules!();
 
@@ -35,6 +37,11 @@ struct AppState {
     sort_col: i32,
     sort_asc: bool,
 
+    // Başlangıç
+    startup: Vec<StartupEntry>,
+    b_ids: Vec<String>,
+    b_rows_model: Rc<VecModel<ModelRc<StandardListViewItem>>>,
+
     // Ayrıntılar (flat view, includes kernel threads and other users)
     d_filter: String,
     d_pids: Vec<i32>,
@@ -54,6 +61,8 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let rows_model = Rc::new(VecModel::default());
     app.set_process_rows(ModelRc::from(rows_model.clone()));
+    let b_rows_model = Rc::new(VecModel::default());
+    app.set_startup_rows(ModelRc::from(b_rows_model.clone()));
     let d_rows_model = Rc::new(VecModel::default());
     app.set_detail_rows(ModelRc::from(d_rows_model.clone()));
     let s_rows_model = Rc::new(VecModel::default());
@@ -70,6 +79,9 @@ fn main() -> Result<(), slint::PlatformError> {
         rows_model,
         sort_col: 2, // CPU
         sort_asc: false,
+        startup: Vec::new(),
+        b_ids: Vec::new(),
+        b_rows_model,
         d_filter: String::new(),
         d_pids: Vec::new(),
         d_rows_model,
@@ -117,21 +129,37 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let state = state.clone();
         let weak = app.as_weak();
-        app.on_kill_requested(move |row| {
+        app.on_process_action(move |action, row| {
             let Some(app) = weak.upgrade() else { return };
             let st = state.borrow();
             let Some(&pid) = st.visible_pids.get(row as usize) else {
                 return;
             };
             if pid <= 0 {
-                app.set_status_text("Bir işlem satırı seç (grup başlığı sonlandırılamaz)".into());
+                app.set_status_text("Bir işlem satırı seç (grup başlığına uygulanamaz)".into());
                 return;
             }
-            let msg = match taskman_core::terminate(pid) {
-                Ok(()) => format!("SIGTERM gönderildi (PID {pid})"),
-                Err(err) => format!("Sonlandırılamadı (PID {pid}): {err}"),
-            };
-            app.set_status_text(msg.into());
+            app.set_status_text(do_process_action(pid, &action).into());
+        });
+    }
+
+    // --- Başlangıç callbacks ---
+    {
+        let state = state.clone();
+        let weak = app.as_weak();
+        app.on_startup_enable(move |row| {
+            let Some(app) = weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            toggle_startup(&app, &mut st, row, true);
+        });
+    }
+    {
+        let state = state.clone();
+        let weak = app.as_weak();
+        app.on_startup_disable(move |row| {
+            let Some(app) = weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            toggle_startup(&app, &mut st, row, false);
         });
     }
 
@@ -171,19 +199,13 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let state = state.clone();
         let weak = app.as_weak();
-        app.on_detail_kill(move |row| {
+        app.on_detail_action(move |action, row| {
             let Some(app) = weak.upgrade() else { return };
             let st = state.borrow();
-            detail_signal(&app, &st, row, false);
-        });
-    }
-    {
-        let state = state.clone();
-        let weak = app.as_weak();
-        app.on_detail_force_kill(move |row| {
-            let Some(app) = weak.upgrade() else { return };
-            let st = state.borrow();
-            detail_signal(&app, &st, row, true);
+            let Some(&pid) = st.d_pids.get(row as usize) else {
+                return;
+            };
+            app.set_detail_status(do_process_action(pid, &action).into());
         });
     }
 
@@ -198,7 +220,7 @@ fn main() -> Result<(), slint::PlatformError> {
             refresh_services_table(&app, &mut st);
         });
     }
-    for (action, setter) in [
+    for (action, which) in [
         (ServiceAction::Start, 0),
         (ServiceAction::Stop, 1),
         (ServiceAction::Restart, 2),
@@ -210,7 +232,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let st = state.borrow();
             run_service_action(&app, &st, row, action);
         };
-        match setter {
+        match which {
             0 => app.on_service_start(handler),
             1 => app.on_service_stop(handler),
             _ => app.on_service_restart(handler),
@@ -224,6 +246,8 @@ fn main() -> Result<(), slint::PlatformError> {
         apply_snapshot(&app, &mut st, snap);
         st.services = taskman_core::list_services();
         refresh_services_table(&app, &mut st);
+        st.startup = taskman_core::list_startup();
+        refresh_startup_table(&app, &mut st);
     }
 
     let timer = Timer::default();
@@ -248,21 +272,52 @@ fn main() -> Result<(), slint::PlatformError> {
     app.run()
 }
 
-fn detail_signal(app: &MainWindow, st: &AppState, row: i32, force: bool) {
-    let Some(&pid) = st.d_pids.get(row as usize) else {
+/// Shared dispatcher for the context-menu / button actions on a process.
+fn do_process_action(pid: i32, action: &str) -> String {
+    let signal_result = |name: &str, r: std::io::Result<()>| match r {
+        Ok(()) => format!("{name} gönderildi (PID {pid})"),
+        Err(err) => format!("Yapılamadı (PID {pid}): {err}"),
+    };
+    match action {
+        "term" => signal_result("SIGTERM", taskman_core::terminate(pid)),
+        "kill" => signal_result("SIGKILL", taskman_core::force_kill(pid)),
+        "stop" => signal_result("SIGSTOP (dondur)", taskman_core::stop_process(pid)),
+        "cont" => signal_result("SIGCONT (devam)", taskman_core::continue_process(pid)),
+        "nice-down" => match taskman_core::set_nice_delta(pid, 5) {
+            Ok(nice) => format!("Öncelik düşürüldü (nice {nice}, PID {pid})"),
+            Err(err) => format!("Öncelik değiştirilemedi (PID {pid}): {err}"),
+        },
+        "nice-up" => match taskman_core::set_nice_delta(pid, -5) {
+            Ok(nice) => format!("Öncelik yükseltildi (nice {nice}, PID {pid})"),
+            Err(err) => format!(
+                "Öncelik yükseltilemedi (PID {pid}): {err} — yükseltmek genelde root ister"
+            ),
+        },
+        "open" => match taskman_core::exe_dir(pid) {
+            Some(dir) => {
+                let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
+                format!("Açılıyor: {}", dir.display())
+            }
+            None => format!("Konum okunamadı (PID {pid}) — başka kullanıcının süreci olabilir"),
+        },
+        _ => String::new(),
+    }
+}
+
+fn toggle_startup(app: &MainWindow, st: &mut AppState, row: i32, enable: bool) {
+    let Some(id) = usize::try_from(row).ok().and_then(|r| st.b_ids.get(r)).cloned() else {
         return;
     };
-    let result = if force {
-        taskman_core::force_kill(pid)
-    } else {
-        taskman_core::terminate(pid)
+    let msg = match taskman_core::set_startup_enabled(&id, enable) {
+        Ok(()) => format!(
+            "{id}: {}",
+            if enable { "etkinleştirildi" } else { "devre dışı bırakıldı" }
+        ),
+        Err(err) => format!("{id}: yapılamadı — {err}"),
     };
-    let signal = if force { "SIGKILL" } else { "SIGTERM" };
-    let msg = match result {
-        Ok(()) => format!("{signal} gönderildi (PID {pid})"),
-        Err(err) => format!("Sonlandırılamadı (PID {pid}): {err}"),
-    };
-    app.set_detail_status(msg.into());
+    st.startup = taskman_core::list_startup();
+    refresh_startup_table(app, st);
+    app.set_startup_status(msg.into());
 }
 
 fn run_service_action(app: &MainWindow, st: &AppState, row: i32, action: ServiceAction) {
@@ -401,6 +456,32 @@ fn refresh_table(app: &MainWindow, st: &mut AppState) {
     app.set_selected_row(new_row);
 }
 
+fn refresh_startup_table(app: &MainWindow, st: &mut AppState) {
+    let selected_id = usize::try_from(app.get_startup_selected_row())
+        .ok()
+        .and_then(|row| st.b_ids.get(row).cloned());
+
+    let mut rows: Vec<ModelRc<StandardListViewItem>> = Vec::new();
+    let mut ids: Vec<String> = Vec::new();
+    for e in &st.startup {
+        rows.push(ModelRc::new(VecModel::from(vec![
+            cell(&e.name),
+            cell(if e.enabled { "Etkin" } else { "Devre dışı" }),
+            cell(&e.exec),
+            cell(if e.user_level { "Kullanıcı" } else { "Sistem" }),
+        ])));
+        ids.push(e.id.clone());
+    }
+    st.b_ids = ids;
+    st.b_rows_model.set_vec(rows);
+
+    let new_row = selected_id
+        .and_then(|id| st.b_ids.iter().position(|i| *i == id))
+        .map(|i| i as i32)
+        .unwrap_or(-1);
+    app.set_startup_selected_row(new_row);
+}
+
 fn refresh_details(app: &MainWindow, st: &mut AppState) {
     let selected_pid = usize::try_from(app.get_detail_selected_row())
         .ok()
@@ -423,7 +504,10 @@ fn refresh_details(app: &MainWindow, st: &mut AppState) {
             0 => a.pid.cmp(&b.pid),
             1 => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
             2 => a.state.cmp(&b.state),
-            3 => users.get(&a.uid).cmp(&users.get(&b.uid)).then(a.uid.cmp(&b.uid)),
+            3 => users
+                .get(&a.uid)
+                .cmp(&users.get(&b.uid))
+                .then(a.uid.cmp(&b.uid)),
             5 => a.mem_bytes.cmp(&b.mem_bytes),
             _ => a.cpu_percent.total_cmp(&b.cpu_percent),
         };

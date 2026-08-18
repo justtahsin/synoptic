@@ -64,6 +64,11 @@ export component MainWindow inherits Window {
     in-out property <string> mem-text;
     in-out property <float> mem-fraction;
 
+    // Başlangıç
+    in-out property <[[StandardListViewItem]]> startup-rows;
+    in-out property <int> startup-selected-row <=> startups.current-row;
+    in-out property <string> startup-status;
+
     // Ayrıntılar
     in-out property <[[StandardListViewItem]]> detail-rows;
     in-out property <int> detail-selected-row <=> details.current-row;
@@ -74,12 +79,13 @@ export component MainWindow inherits Window {
     in-out property <int> service-selected-row <=> services.current-row;
     in-out property <string> service-status;
 
-    callback kill-requested(int);
+    callback process-action(string, int);
     callback search-edited(string);
     callback sort-ascending(int);
     callback sort-descending(int);
-    callback detail-kill(int);
-    callback detail-force-kill(int);
+    callback startup-enable(int);
+    callback startup-disable(int);
+    callback detail-action(string, int);
     callback detail-search-edited(string);
     callback detail-sort-ascending(int);
     callback detail-sort-descending(int);
@@ -108,16 +114,22 @@ export component MainWindow inherits Window {
                     activated => { root.page = 1; }
                 }
                 NavItem {
-                    label: "Ayrıntılar";
-                    glyph: "#";
+                    label: "Başlangıç uygulamaları";
+                    glyph: "▶";
                     active: root.page == 2;
                     activated => { root.page = 2; }
                 }
                 NavItem {
-                    label: "Hizmetler";
-                    glyph: "⚙";
+                    label: "Ayrıntılar";
+                    glyph: "#";
                     active: root.page == 3;
                     activated => { root.page = 3; }
+                }
+                NavItem {
+                    label: "Hizmetler";
+                    glyph: "⚙";
+                    active: root.page == 4;
+                    activated => { root.page = 4; }
                 }
                 Rectangle { }
                 Text {
@@ -148,19 +160,61 @@ export component MainWindow inherits Window {
                             text: "Görevi sonlandır";
                             primary: true;
                             enabled: table.current-row >= 0;
-                            clicked => { root.kill-requested(table.current-row); }
+                            clicked => { root.process-action("term", table.current-row); }
                         }
                     }
-                    table := StandardTableView {
-                        columns: [
-                            { title: "Ad", horizontal-stretch: 2 },
-                            { title: "PID", horizontal-stretch: 1 },
-                            { title: "CPU", horizontal-stretch: 1 },
-                            { title: "Bellek", horizontal-stretch: 1 },
-                        ];
-                        rows: root.process-rows;
-                        sort-ascending(index) => { root.sort-ascending(index); }
-                        sort-descending(index) => { root.sort-descending(index); }
+                    proc-menu := ContextMenuArea {
+                        vertical-stretch: 1;
+                        Menu {
+                            MenuItem {
+                                title: "Görevi sonlandır";
+                                activated => { root.process-action("term", table.current-row); }
+                            }
+                            MenuItem {
+                                title: "Zorla sonlandır";
+                                activated => { root.process-action("kill", table.current-row); }
+                            }
+                            MenuSeparator { }
+                            MenuItem {
+                                title: "Dondur";
+                                activated => { root.process-action("stop", table.current-row); }
+                            }
+                            MenuItem {
+                                title: "Devam ettir";
+                                activated => { root.process-action("cont", table.current-row); }
+                            }
+                            MenuSeparator { }
+                            MenuItem {
+                                title: "Önceliği düşür";
+                                activated => { root.process-action("nice-down", table.current-row); }
+                            }
+                            MenuItem {
+                                title: "Önceliği yükselt";
+                                activated => { root.process-action("nice-up", table.current-row); }
+                            }
+                            MenuSeparator { }
+                            MenuItem {
+                                title: "Dosya konumunu aç";
+                                activated => { root.process-action("open", table.current-row); }
+                            }
+                        }
+                        table := StandardTableView {
+                            columns: [
+                                { title: "Ad", horizontal-stretch: 2 },
+                                { title: "PID", horizontal-stretch: 1 },
+                                { title: "CPU", horizontal-stretch: 1 },
+                                { title: "Bellek", horizontal-stretch: 1 },
+                            ];
+                            rows: root.process-rows;
+                            sort-ascending(index) => { root.sort-ascending(index); }
+                            sort-descending(index) => { root.sort-descending(index); }
+                            row-pointer-event(row, event, position) => {
+                                if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                                    self.current-row = row;
+                                    proc-menu.show({ x: position.x, y: position.y });
+                                }
+                            }
+                        }
                     }
                     Text {
                         text: root.status-text;
@@ -242,9 +296,52 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // ---- Ayrıntılar ----
+            // ---- Başlangıç ----
             Rectangle {
                 visible: root.page == 2;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Başlangıçta çalışan uygulamalar";
+                            font-size: 13px;
+                            opacity: 0.8;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Button {
+                            text: "Etkinleştir";
+                            enabled: startups.current-row >= 0;
+                            clicked => { root.startup-enable(startups.current-row); }
+                        }
+                        Button {
+                            text: "Devre dışı bırak";
+                            enabled: startups.current-row >= 0;
+                            clicked => { root.startup-disable(startups.current-row); }
+                        }
+                    }
+                    startups := StandardTableView {
+                        columns: [
+                            { title: "Ad", horizontal-stretch: 2 },
+                            { title: "Durum", horizontal-stretch: 1 },
+                            { title: "Komut", horizontal-stretch: 3 },
+                            { title: "Konum", horizontal-stretch: 1 },
+                        ];
+                        rows: root.startup-rows;
+                    }
+                    Text {
+                        text: root.startup-status;
+                        font-size: 12px;
+                        opacity: 0.7;
+                    }
+                }
+            }
+
+            // ---- Ayrıntılar ----
+            Rectangle {
+                visible: root.page == 3;
                 VerticalLayout {
                     padding: 12px;
                     spacing: 8px;
@@ -257,26 +354,68 @@ export component MainWindow inherits Window {
                         Button {
                             text: "Sonlandır";
                             enabled: details.current-row >= 0;
-                            clicked => { root.detail-kill(details.current-row); }
+                            clicked => { root.detail-action("term", details.current-row); }
                         }
                         Button {
                             text: "Zorla sonlandır";
                             enabled: details.current-row >= 0;
-                            clicked => { root.detail-force-kill(details.current-row); }
+                            clicked => { root.detail-action("kill", details.current-row); }
                         }
                     }
-                    details := StandardTableView {
-                        columns: [
-                            { title: "PID", horizontal-stretch: 1 },
-                            { title: "Ad", horizontal-stretch: 3 },
-                            { title: "Durum", horizontal-stretch: 1 },
-                            { title: "Kullanıcı", horizontal-stretch: 1 },
-                            { title: "CPU", horizontal-stretch: 1 },
-                            { title: "Bellek", horizontal-stretch: 1 },
-                        ];
-                        rows: root.detail-rows;
-                        sort-ascending(index) => { root.detail-sort-ascending(index); }
-                        sort-descending(index) => { root.detail-sort-descending(index); }
+                    detail-menu := ContextMenuArea {
+                        vertical-stretch: 1;
+                        Menu {
+                            MenuItem {
+                                title: "Sonlandır";
+                                activated => { root.detail-action("term", details.current-row); }
+                            }
+                            MenuItem {
+                                title: "Zorla sonlandır";
+                                activated => { root.detail-action("kill", details.current-row); }
+                            }
+                            MenuSeparator { }
+                            MenuItem {
+                                title: "Dondur";
+                                activated => { root.detail-action("stop", details.current-row); }
+                            }
+                            MenuItem {
+                                title: "Devam ettir";
+                                activated => { root.detail-action("cont", details.current-row); }
+                            }
+                            MenuSeparator { }
+                            MenuItem {
+                                title: "Önceliği düşür";
+                                activated => { root.detail-action("nice-down", details.current-row); }
+                            }
+                            MenuItem {
+                                title: "Önceliği yükselt";
+                                activated => { root.detail-action("nice-up", details.current-row); }
+                            }
+                            MenuSeparator { }
+                            MenuItem {
+                                title: "Dosya konumunu aç";
+                                activated => { root.detail-action("open", details.current-row); }
+                            }
+                        }
+                        details := StandardTableView {
+                            columns: [
+                                { title: "PID", horizontal-stretch: 1 },
+                                { title: "Ad", horizontal-stretch: 3 },
+                                { title: "Durum", horizontal-stretch: 1 },
+                                { title: "Kullanıcı", horizontal-stretch: 1 },
+                                { title: "CPU", horizontal-stretch: 1 },
+                                { title: "Bellek", horizontal-stretch: 1 },
+                            ];
+                            rows: root.detail-rows;
+                            sort-ascending(index) => { root.detail-sort-ascending(index); }
+                            sort-descending(index) => { root.detail-sort-descending(index); }
+                            row-pointer-event(row, event, position) => {
+                                if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                                    self.current-row = row;
+                                    detail-menu.show({ x: position.x, y: position.y });
+                                }
+                            }
+                        }
                     }
                     Text {
                         text: root.detail-status;
@@ -288,7 +427,7 @@ export component MainWindow inherits Window {
 
             // ---- Hizmetler ----
             Rectangle {
-                visible: root.page == 3;
+                visible: root.page == 4;
                 VerticalLayout {
                     padding: 12px;
                     spacing: 8px;

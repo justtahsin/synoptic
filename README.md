@@ -27,6 +27,12 @@ cargo run --release
   - 1 sn aralıkla canlı liste; sütun başlığına tıklayarak sıralama
   - Yazarak arama (ad veya PID)
   - "Görevi sonlandır" (SIGTERM); seçim, liste yeniden sıralansa da **PID ile korunur**
+- **Başlangıç uygulamaları**: XDG autostart girdileri (sistem + kullanıcı,
+  yerelleştirilmiş adlarla); Etkinleştir / Devre dışı bırak — devre dışı bırakma,
+  masaüstü araçlarının kullandığı standart `Hidden=true` kullanıcı kopyası yöntemiyle
+- **Sağ tık menüsü** (İşlemler ve Ayrıntılar): Sonlandır, Zorla sonlandır,
+  Dondur/Devam ettir (SIGSTOP/SIGCONT — Windows'ta bile olmayan bonus),
+  Önceliği düşür/yükselt (nice ±5), Dosya konumunu aç
 - **Ayrıntılar**: tüm süreçler (kernel thread'leri ve diğer kullanıcılar dahil);
   PID/Ad/Durum/Kullanıcı/CPU/Bellek sütunları, sıralama, SIGTERM ve SIGKILL
 - **Hizmetler**: systemd servislerini listeler (5 sn'de bir tazelenir); Başlat /
@@ -46,3 +52,6 @@ cargo run --release
   "Arka plan"a düşebilir.
 - Bellek RSS'tir (paylaşılan sayfalar dahil); PSS daha sonra.
 - Örnekleme UI thread'inde; nihai sürümde ayrı thread'e taşınacak.
+- Başlangıç sekmesi şimdilik yalnızca XDG autostart'ı kapsıyor; systemd user
+  unit'leri ve OnlyShowIn/NotShowIn filtreleri sonra.
+- Öncelik yükseltme CAP_SYS_NICE ister; hata mesajıyla bildirilir.
