@@ -1,0 +1,184 @@
+import { StandardTableView, LineEdit, Button, Palette } from "std-widgets.slint";
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <string> glyph;
+    in property <bool> active;
+    callback activated;
+
+    height: 40px;
+    border-radius: 6px;
+    background: root.active ? #80808033 : (touch.has-hover ? #8080801a : transparent);
+
+    touch := TouchArea {
+        clicked => { root.activated(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        Text {
+            text: root.glyph;
+            font-size: 15px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.label;
+            font-size: 14px;
+            vertical-alignment: center;
+        }
+    }
+
+    Rectangle {
+        visible: root.active;
+        x: 0;
+        y: parent.height / 2 - 8px;
+        width: 3px;
+        height: 16px;
+        border-radius: 1.5px;
+        background: #0067C0;
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Görev Yöneticisi — PoC";
+    preferred-width: 960px;
+    preferred-height: 640px;
+    min-width: 720px;
+    min-height: 480px;
+
+    in-out property <int> page: 0;
+    in-out property <[[StandardListViewItem]]> process-rows;
+    in-out property <string> cpu-line;
+    in-out property <string> cpu-fill;
+    in-out property <string> cpu-text: "%0";
+    in-out property <string> cpu-detail;
+    in-out property <string> mem-text;
+    in-out property <float> mem-fraction;
+    in-out property <string> status-text;
+
+    callback kill-requested(int);
+    callback search-edited(string);
+
+    HorizontalLayout {
+        Rectangle {
+            width: 210px;
+            background: Palette.alternate-background;
+            VerticalLayout {
+                padding: 8px;
+                spacing: 4px;
+                NavItem {
+                    label: "İşlemler";
+                    glyph: "≡";
+                    active: root.page == 0;
+                    activated => { root.page = 0; }
+                }
+                NavItem {
+                    label: "Performans";
+                    glyph: "%";
+                    active: root.page == 1;
+                    activated => { root.page = 1; }
+                }
+                Rectangle { }
+                Text {
+                    text: "PoC — Rust + Slint";
+                    font-size: 11px;
+                    opacity: 0.6;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+
+        Rectangle {
+            background: Palette.background;
+
+            Rectangle {
+                visible: root.page == 0;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        LineEdit {
+                            placeholder-text: "Ada veya PID'ye göre ara";
+                            edited(text) => { root.search-edited(text); }
+                        }
+                        Button {
+                            text: "Görevi sonlandır";
+                            primary: true;
+                            enabled: table.current-row >= 0;
+                            clicked => { root.kill-requested(table.current-row); }
+                        }
+                    }
+                    table := StandardTableView {
+                        columns: [
+                            { title: "Ad", horizontal-stretch: 2 },
+                            { title: "PID", horizontal-stretch: 1 },
+                            { title: "CPU", horizontal-stretch: 1 },
+                            { title: "Bellek", horizontal-stretch: 1 },
+                        ];
+                        rows: root.process-rows;
+                    }
+                    Text {
+                        text: root.status-text;
+                        font-size: 12px;
+                        opacity: 0.7;
+                    }
+                }
+            }
+
+            Rectangle {
+                visible: root.page == 1;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+                    Text { text: "CPU"; font-size: 20px; font-weight: 600; }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: root.cpu-text; font-size: 34px; }
+                        Text {
+                            text: root.cpu-detail;
+                            font-size: 12px;
+                            opacity: 0.7;
+                            vertical-alignment: bottom;
+                        }
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        border-width: 1px;
+                        border-color: #0067C066;
+                        border-radius: 4px;
+                        clip: true;
+                        Path {
+                            commands: root.cpu-fill;
+                            viewbox-width: 600;
+                            viewbox-height: 100;
+                            fill: #0067C022;
+                        }
+                        Path {
+                            commands: root.cpu-line;
+                            viewbox-width: 600;
+                            viewbox-height: 100;
+                            stroke: #0067C0;
+                            stroke-width: 1.5px;
+                        }
+                    }
+                    Text { text: "Bellek"; font-size: 20px; font-weight: 600; }
+                    Rectangle {
+                        height: 22px;
+                        border-radius: 4px;
+                        background: #80808022;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * root.mem-fraction;
+                            border-radius: 4px;
+                            background: #9A48D0;
+                        }
+                    }
+                    Text { text: root.mem-text; font-size: 13px; }
+                }
+            }
+        }
+    }
+}

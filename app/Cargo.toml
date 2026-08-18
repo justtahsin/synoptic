@@ -1,0 +1,13 @@
+[package]
+name = "taskman-app"
+version = "0.1.0"
+edition = "2021"
+description = "Windows Task Manager-style system monitor for Linux (PoC)"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+slint = "1"
+taskman-core = { path = "../core" }
+
+[build-dependencies]
+slint-build = "1"

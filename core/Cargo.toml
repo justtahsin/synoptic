@@ -1,0 +1,9 @@
+[package]
+name = "taskman-core"
+version = "0.1.0"
+edition = "2021"
+description = "UI-independent system data collection layer (PoC)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+libc = "0.2"
