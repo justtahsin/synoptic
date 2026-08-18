@@ -76,6 +76,12 @@ export component MainWindow inherits Window {
     in-out property <color> perf-color: #0067C0;
     in-out property <[float]> core-loads;
     in-out property <float> mem-fraction;
+    out property <length> graph-w: graph-rect.width;
+    out property <length> graph-h: graph-rect.height;
+    in-out property <float> perf-vbh: 150;
+
+    // Kullanıcılar
+    in-out property <[[StandardListViewItem]]> user-rows;
 
     // Başlangıç
     in-out property <[[StandardListViewItem]]> startup-rows;
@@ -134,16 +140,22 @@ export component MainWindow inherits Window {
                     activated => { root.page = 2; }
                 }
                 NavItem {
-                    label: "Ayrıntılar";
-                    glyph: "#";
+                    label: "Kullanıcılar";
+                    glyph: "@";
                     active: root.page == 3;
                     activated => { root.page = 3; }
                 }
                 NavItem {
-                    label: "Hizmetler";
-                    glyph: "⚙";
+                    label: "Ayrıntılar";
+                    glyph: "#";
                     active: root.page == 4;
                     activated => { root.page = 4; }
+                }
+                NavItem {
+                    label: "Hizmetler";
+                    glyph: "⚙";
+                    active: root.page == 5;
+                    activated => { root.page = 5; }
                 }
                 Rectangle { }
                 Text {
@@ -262,6 +274,7 @@ export component MainWindow inherits Window {
                                 spacing: 10px;
                                 Rectangle {
                                     width: 86px;
+                                    height: 46px;
                                     border-width: 1px;
                                     border-color: card.color;
                                     border-radius: 3px;
@@ -269,7 +282,7 @@ export component MainWindow inherits Window {
                                     Path {
                                         commands: card.line;
                                         viewbox-width: 600;
-                                        viewbox-height: 100;
+                                        viewbox-height: 321;
                                         stroke: card.color;
                                         stroke-width: 2.5px;
                                     }
@@ -296,7 +309,7 @@ export component MainWindow inherits Window {
                                 vertical-alignment: bottom;
                             }
                         }
-                        Rectangle {
+                        graph-rect := Rectangle {
                             vertical-stretch: 1;
                             border-width: 1px;
                             border-color: root.perf-color.with-alpha(0.4);
@@ -305,20 +318,20 @@ export component MainWindow inherits Window {
                             Path {
                                 commands: root.perf-fill;
                                 viewbox-width: 600;
-                                viewbox-height: 100;
+                                viewbox-height: root.perf-vbh;
                                 fill: root.perf-color.with-alpha(0.13);
                             }
                             Path {
                                 commands: root.perf-line;
                                 viewbox-width: 600;
-                                viewbox-height: 100;
+                                viewbox-height: root.perf-vbh;
                                 stroke: root.perf-color;
                                 stroke-width: 1.5px;
                             }
                             Path {
                                 commands: root.perf-line2;
                                 viewbox-width: 600;
-                                viewbox-height: 100;
+                                viewbox-height: root.perf-vbh;
                                 stroke: root.perf-color.with-alpha(0.5);
                                 stroke-width: 1.5px;
                             }
@@ -402,9 +415,32 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // ---- Ayrıntılar ----
+            // ---- Kullanıcılar ----
             Rectangle {
                 visible: root.page == 3;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    Text {
+                        text: "Kullanıcı başına kaynak kullanımı";
+                        font-size: 13px;
+                        opacity: 0.8;
+                    }
+                    StandardTableView {
+                        columns: [
+                            { title: "Kullanıcı", horizontal-stretch: 2 },
+                            { title: "İşlem sayısı", horizontal-stretch: 1 },
+                            { title: "CPU", horizontal-stretch: 1 },
+                            { title: "Bellek", horizontal-stretch: 1 },
+                        ];
+                        rows: root.user-rows;
+                    }
+                }
+            }
+
+            // ---- Ayrıntılar ----
+            Rectangle {
+                visible: root.page == 4;
                 VerticalLayout {
                     padding: 12px;
                     spacing: 8px;
@@ -492,7 +528,7 @@ export component MainWindow inherits Window {
 
             // ---- Hizmetler ----
             Rectangle {
-                visible: root.page == 4;
+                visible: root.page == 5;
                 VerticalLayout {
                     padding: 12px;
                     spacing: 8px;

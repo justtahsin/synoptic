@@ -16,7 +16,8 @@ slint::include_modules!();
 const HISTORY: usize = 60;
 /// Virtual coordinate space of the graph paths (matches the .slint viewbox).
 const VIEW_W: f32 = 600.0;
-const VIEW_H: f32 = 100.0;
+/// Mini card thumb viewbox height (matches the 86x46 thumb aspect).
+const MINI_VBH: f32 = 321.0;
 /// Refresh the service list every N sampling ticks.
 const SERVICE_REFRESH_TICKS: u32 = 5;
 /// Minimum network graph scale so idle noise does not fill the graph.
@@ -67,6 +68,9 @@ struct AppState {
     sort_col: i32,
     sort_asc: bool,
 
+    // Kullanıcılar
+    u_rows_model: Rc<VecModel<ModelRc<StandardListViewItem>>>,
+
     // Başlangıç
     startup: Vec<StartupEntry>,
     b_ids: Vec<String>,
@@ -93,7 +97,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(i) = args.iter().position(|a| a == "--page") {
         if let Some(n) = args.get(i + 1).and_then(|v| v.parse::<i32>().ok()) {
-            app.set_page(n.clamp(0, 4));
+            app.set_page(n.clamp(0, 5));
         }
     }
 
@@ -107,6 +111,8 @@ fn main() -> Result<(), slint::PlatformError> {
     app.set_service_rows(ModelRc::from(s_rows_model.clone()));
     let perf_model = Rc::new(VecModel::default());
     app.set_perf_cards(ModelRc::from(perf_model.clone()));
+    let u_rows_model = Rc::new(VecModel::default());
+    app.set_user_rows(ModelRc::from(u_rows_model.clone()));
 
     let state = Rc::new(RefCell::new(AppState {
         sampler: Sampler::new(),
@@ -127,6 +133,7 @@ fn main() -> Result<(), slint::PlatformError> {
         last_nets: Vec::new(),
         card_keys: Vec::new(),
         perf_model,
+        u_rows_model,
         filter: String::new(),
         visible_pids: Vec::new(),
         rows_model,
@@ -457,6 +464,7 @@ fn apply_snapshot(app: &MainWindow, st: &mut AppState, snap: Snapshot) {
     st.processes = processes;
     refresh_table(app, st);
     refresh_details(app, st);
+    refresh_users_table(app, st);
     rebuild_perf(app, st);
 }
 
@@ -468,7 +476,7 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
     cards.push(PerfCard {
         title: "CPU".into(),
         value: format!("%{:.0}", st.last_cpu).into(),
-        line: series_paths(&st.hist_cpu, 100.0).0.into(),
+        line: series_paths(&st.hist_cpu, 100.0, MINI_VBH).0.into(),
         color: BLUE,
     });
     keys.push(CardKey::Cpu);
@@ -483,7 +491,7 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
             mem_pct
         )
         .into(),
-        line: series_paths(&st.hist_mem, 100.0).0.into(),
+        line: series_paths(&st.hist_mem, 100.0, MINI_VBH).0.into(),
         color: PURPLE,
     });
     keys.push(CardKey::Mem);
@@ -492,7 +500,7 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
         let line = st
             .hist_disk
             .get(&d.name)
-            .map(|h| series_paths(h, 100.0).0)
+            .map(|h| series_paths(h, 100.0, MINI_VBH).0)
             .unwrap_or_default();
         cards.push(PerfCard {
             title: format!("Disk ({})", d.name).into(),
@@ -513,7 +521,7 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
         cards.push(PerfCard {
             title: format!("Ağ ({})", n.name).into(),
             value: fmt_rate(n.rx_bps + n.tx_bps).into(),
-            line: series_paths(&combined, scale).0.into(),
+            line: series_paths(&combined, scale, MINI_VBH).0.into(),
             color: ORANGE,
         });
         keys.push(CardKey::Net(n.name.clone()));
@@ -525,10 +533,15 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
     let sel = app.get_perf_selected().clamp(0, (count - 1).max(0));
     app.set_perf_selected(sel);
 
+    let gw = app.get_graph_w();
+    let gh = app.get_graph_h();
+    let vbh = if gw > 1.0 && gh > 1.0 { VIEW_W * gh / gw } else { 150.0 };
+    app.set_perf_vbh(vbh);
+
     let empty = SharedString::default();
     match st.card_keys.get(sel as usize) {
         Some(CardKey::Cpu) => {
-            let (line, fill) = series_paths(&st.hist_cpu, 100.0);
+            let (line, fill) = series_paths(&st.hist_cpu, 100.0, vbh);
             app.set_perf_title("CPU".into());
             app.set_perf_value(format!("%{:.0}", st.last_cpu).into());
             app.set_perf_sub1(
@@ -541,7 +554,7 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
             app.set_perf_color(BLUE);
         }
         Some(CardKey::Mem) => {
-            let (line, fill) = series_paths(&st.hist_mem, 100.0);
+            let (line, fill) = series_paths(&st.hist_mem, 100.0, vbh);
             app.set_perf_title("Bellek".into());
             app.set_perf_value(format!("%{:.0}", st.hist_mem.back().copied().unwrap_or(0.0)).into());
             app.set_perf_sub1(
@@ -561,7 +574,7 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
         Some(CardKey::Disk(name)) => {
             let hist = st.hist_disk.get(name);
             let (line, fill) = hist
-                .map(|h| series_paths(h, 100.0))
+                .map(|h| series_paths(h, 100.0, vbh))
                 .unwrap_or_default();
             let d = st.last_disks.iter().find(|d| &d.name == name);
             app.set_perf_title(format!("Disk ({name})").into());
@@ -590,8 +603,8 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
                 .chain(tx)
                 .flat_map(|h| h.iter().copied())
                 .fold(MIN_NET_SCALE, f32::max);
-            let (line, fill) = rx.map(|h| series_paths(h, scale)).unwrap_or_default();
-            let (line2, _) = tx.map(|h| series_paths(h, scale)).unwrap_or_default();
+            let (line, fill) = rx.map(|h| series_paths(h, scale, vbh)).unwrap_or_default();
+            let (line2, _) = tx.map(|h| series_paths(h, scale, vbh)).unwrap_or_default();
             let n = st.last_nets.iter().find(|n| &n.name == name);
             app.set_perf_title(format!("Ağ ({name})").into());
             app.set_perf_value(
@@ -776,6 +789,45 @@ fn refresh_details(app: &MainWindow, st: &mut AppState) {
     app.set_detail_selected_row(new_row);
 }
 
+/// Aggregate per-user resource usage, Windows "Users" style.
+fn refresh_users_table(_app: &MainWindow, st: &mut AppState) {
+    struct Agg {
+        count: usize,
+        cpu: f32,
+        mem: u64,
+    }
+    let mut by_uid: HashMap<u32, Agg> = HashMap::new();
+    for p in &st.processes {
+        let a = by_uid.entry(p.uid).or_insert(Agg {
+            count: 0,
+            cpu: 0.0,
+            mem: 0,
+        });
+        a.count += 1;
+        a.cpu += p.cpu_percent;
+        a.mem += p.mem_bytes;
+    }
+    let mut list: Vec<(u32, Agg)> = by_uid.into_iter().collect();
+    list.sort_by(|a, b| b.1.mem.cmp(&a.1.mem));
+    let rows: Vec<ModelRc<StandardListViewItem>> = list
+        .iter()
+        .map(|(uid, a)| {
+            let name = st
+                .users
+                .get(uid)
+                .cloned()
+                .unwrap_or_else(|| uid.to_string());
+            ModelRc::new(VecModel::from(vec![
+                cell(&name),
+                cell(&a.count.to_string()),
+                cell(&format!("%{:.1}", a.cpu)),
+                cell(&fmt_bytes(a.mem)),
+            ]))
+        })
+        .collect();
+    st.u_rows_model.set_vec(rows);
+}
+
 fn refresh_services_table(app: &MainWindow, st: &mut AppState) {
     let selected_name = usize::try_from(app.get_service_selected_row())
         .ok()
@@ -827,7 +879,8 @@ fn state_label(state: char) -> &'static str {
 }
 
 /// Build SVG path commands for a series scaled to `max` (line, filled area).
-fn series_paths(history: &VecDeque<f32>, max: f32) -> (String, String) {
+/// `view_h` is the viewbox height the target Path element uses.
+fn series_paths(history: &VecDeque<f32>, max: f32, view_h: f32) -> (String, String) {
     let n = history.len();
     if n < 2 || max <= 0.0 {
         return (String::new(), String::new());
@@ -837,14 +890,14 @@ fn series_paths(history: &VecDeque<f32>, max: f32) -> (String, String) {
     let mut line = String::new();
     for (i, v) in history.iter().enumerate() {
         let x = left + i as f32 * step;
-        let y = (VIEW_H - (v / max).clamp(0.0, 1.0) * VIEW_H).clamp(0.0, VIEW_H);
+        let y = (view_h - (v / max).clamp(0.0, 1.0) * view_h).clamp(0.0, view_h);
         if i == 0 {
             line.push_str(&format!("M {x:.1} {y:.1} "));
         } else {
             line.push_str(&format!("L {x:.1} {y:.1} "));
         }
     }
-    let fill = format!("{line}L {VIEW_W} {VIEW_H} L {left:.1} {VIEW_H} Z");
+    let fill = format!("{line}L {VIEW_W} {view_h:.1} L {left:.1} {view_h:.1} Z");
     (line, fill)
 }
 

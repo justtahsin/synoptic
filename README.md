@@ -33,6 +33,7 @@ cargo run --release
 - **Sağ tık menüsü** (İşlemler ve Ayrıntılar): Sonlandır, Zorla sonlandır,
   Dondur/Devam ettir (SIGSTOP/SIGCONT — Windows'ta bile olmayan bonus),
   Önceliği düşür/yükselt (nice ±5), Dosya konumunu aç
+- **Kullanıcılar**: kullanıcı başına işlem sayısı, CPU ve bellek toplamları
 - **Ayrıntılar**: tüm süreçler (kernel thread'leri ve diğer kullanıcılar dahil);
   PID/Ad/Durum/Kullanıcı/CPU/Bellek sütunları, sıralama, SIGTERM ve SIGKILL
 - **Hizmetler**: systemd servislerini listeler (5 sn'de bir tazelenir); Başlat /
