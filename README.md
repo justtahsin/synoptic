@@ -49,6 +49,9 @@ cargo build --release
 ./target/release/synoptic
 ```
 
+Building needs the fontconfig headers: `libfontconfig1-dev` on Debian/Ubuntu,
+`fontconfig-devel` on Fedora; Arch ships them with the `fontconfig` package.
+
 Planned: prebuilt single-binary releases, Flathub, AUR.
 
 ## Design principles

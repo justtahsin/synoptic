@@ -14,6 +14,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: System dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
