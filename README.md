@@ -24,7 +24,7 @@ muscle memory they already have. Synoptic is that tool.
 | Tab | What it does |
 |---|---|
 | **Processes** | Live list grouped into Apps / Background / System (systemd cgroups), type-to-search, column sorting, selection kept by PID, End task |
-| **Performance** | Resource cards with mini graphs (CPU, memory, every physical disk, every NIC); 60-second detail graphs; per-core load; disk active-time %; rx/tx with auto-scaling |
+| **Performance** | Resource cards with mini graphs (CPU, memory, every physical disk, every NIC, every GPU); 60-second detail graphs; per-core load; disk active-time %; rx/tx with auto-scaling; GPU usage, VRAM and temperature |
 | **Startup apps** | XDG autostart entries (system + user, localized names); enable/disable via the standard `Hidden=true` user-copy method |
 | **Users** | Per-user process count, CPU and memory aggregates |
 | **Details** | Every process incl. kernel threads and other users; state, user, CPU, memory; SIGTERM / SIGKILL |
@@ -65,7 +65,8 @@ Planned: prebuilt single-binary releases, Flathub, AUR.
 
 - [x] Processes, Performance, Startup apps, Users, Details, Services
 - [ ] App history (persistent per-app usage accounting)
-- [ ] GPU monitoring (DRM fdinfo, NVML)
+- [x] GPU monitoring (amdgpu sysfs: usage, VRAM, temperature; other vendors best-effort)
+- [ ] Per-process GPU usage (DRM fdinfo) and NVIDIA support (NVML)
 - [ ] Multi-process app grouping with expandable rows
 - [ ] i18n (UI is Turkish-first today; English + gettext workflow planned)
 - [ ] Native D-Bus (zbus) backend for services, replacing systemctl calls

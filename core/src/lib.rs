@@ -3,9 +3,11 @@
 //! Reads system and per-process metrics from /proc. Designed to be cheap
 //! enough to call once per second.
 
+mod gpu;
 mod services;
 mod startup;
 mod stats;
+pub use gpu::GpuStats;
 pub use services::{list_services, service_action, ServiceAction, ServiceInfo};
 pub use startup::{list_startup, set_startup_enabled, StartupEntry};
 pub use stats::{DiskStats, NetStats};
@@ -51,6 +53,7 @@ pub struct Snapshot {
     pub mem_used: u64,
     pub disks: Vec<DiskStats>,
     pub nets: Vec<NetStats>,
+    pub gpus: Vec<GpuStats>,
     pub processes: Vec<ProcessInfo>,
 }
 
@@ -68,6 +71,7 @@ pub struct Sampler {
     prev_proc: HashMap<i32, u64>,
     page_size: u64,
     io: stats::IoSampler,
+    gpu: gpu::GpuSampler,
 }
 
 impl Sampler {
@@ -78,6 +82,7 @@ impl Sampler {
             prev_proc: HashMap::new(),
             page_size: page_size(),
             io: stats::IoSampler::new(),
+            gpu: gpu::GpuSampler::new(),
         }
     }
 
@@ -159,6 +164,7 @@ impl Sampler {
         self.prev_proc = next_prev;
 
         let (disks, nets) = self.io.sample();
+        let gpus = self.gpu.sample();
 
         Snapshot {
             cpu_percent,
@@ -167,6 +173,7 @@ impl Sampler {
             mem_used,
             disks,
             nets,
+            gpus,
             processes,
         }
     }

@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use slint::{Color, ModelRc, SharedString, StandardListViewItem, Timer, TimerMode, VecModel};
 use synoptic_core::{
-    DiskStats, Group, NetStats, ProcessInfo, Sampler, ServiceAction, ServiceInfo, Snapshot,
-    StartupEntry,
+    DiskStats, GpuStats, Group, NetStats, ProcessInfo, Sampler, ServiceAction, ServiceInfo,
+    Snapshot, StartupEntry,
 };
 
 slint::include_modules!();
@@ -31,6 +31,7 @@ const BLUE: Color = Color::from_rgb_u8(0x00, 0x67, 0xC0);
 const PURPLE: Color = Color::from_rgb_u8(0x9A, 0x48, 0xD0);
 const GREEN: Color = Color::from_rgb_u8(0x12, 0x85, 0x5F);
 const ORANGE: Color = Color::from_rgb_u8(0xC4, 0x6A, 0x00);
+const CYAN: Color = Color::from_rgb_u8(0x00, 0x99, 0xBC);
 
 /// Set by worker threads after a service action so the next tick re-lists.
 static REFRESH_SERVICES: AtomicBool = AtomicBool::new(false);
@@ -40,6 +41,7 @@ enum CardKey {
     Mem,
     Disk(String),
     Net(String),
+    Gpu(String),
 }
 
 struct AppState {
@@ -54,6 +56,7 @@ struct AppState {
     hist_disk: HashMap<String, VecDeque<f32>>,
     hist_net_rx: HashMap<String, VecDeque<f32>>,
     hist_net_tx: HashMap<String, VecDeque<f32>>,
+    hist_gpu: HashMap<String, VecDeque<f32>>,
     last_cpu: f32,
     last_cores: usize,
     last_proc_count: usize,
@@ -61,6 +64,7 @@ struct AppState {
     last_mem_used: u64,
     last_disks: Vec<DiskStats>,
     last_nets: Vec<NetStats>,
+    last_gpus: Vec<GpuStats>,
     card_keys: Vec<CardKey>,
     perf_model: Rc<VecModel<PerfCard>>,
 
@@ -139,6 +143,7 @@ fn main() -> Result<(), slint::PlatformError> {
         hist_disk: HashMap::new(),
         hist_net_rx: HashMap::new(),
         hist_net_tx: HashMap::new(),
+        hist_gpu: HashMap::new(),
         last_cpu: 0.0,
         last_cores: 0,
         last_proc_count: 0,
@@ -146,6 +151,7 @@ fn main() -> Result<(), slint::PlatformError> {
         last_mem_used: 0,
         last_disks: Vec::new(),
         last_nets: Vec::new(),
+        last_gpus: Vec::new(),
         card_keys: Vec::new(),
         perf_model,
         u_rows_model,
@@ -458,6 +464,7 @@ fn apply_snapshot(app: &MainWindow, st: &mut AppState, snap: Snapshot) {
         mem_used,
         disks,
         nets,
+        gpus,
         processes,
     } = snap;
 
@@ -501,6 +508,19 @@ fn apply_snapshot(app: &MainWindow, st: &mut AppState, snap: Snapshot) {
     }
     st.last_disks = disks;
     st.last_nets = nets;
+
+    st.hist_gpu.retain(|k, _| gpus.iter().any(|g| &g.id == k));
+    for g in &gpus {
+        let value = g
+            .busy_percent
+            .or_else(|| match (g.vram_used, g.vram_total) {
+                (Some(u), Some(t)) if t > 0 => Some(100.0 * u as f32 / t as f32),
+                _ => None,
+            })
+            .unwrap_or(0.0);
+        push_capped(st.hist_gpu.entry(g.id.clone()).or_default(), value);
+    }
+    st.last_gpus = gpus;
 
     st.processes = processes;
     refresh_table(app, st);
@@ -566,6 +586,33 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
             color: ORANGE,
         });
         keys.push(CardKey::Net(n.name.clone()));
+    }
+
+    let gpu_count = st.last_gpus.len();
+    for (i, g) in st.last_gpus.iter().enumerate() {
+        let line = st
+            .hist_gpu
+            .get(&g.id)
+            .map(|h| series_paths(h, 100.0, MINI_VBH).0)
+            .unwrap_or_default();
+        let mut value = match g.busy_percent {
+            Some(b) => format!("%{b:.0}"),
+            None => "—".to_string(),
+        };
+        if let Some(t) = g.temp_c {
+            value.push_str(&format!(" • {t:.0}°C"));
+        }
+        cards.push(PerfCard {
+            title: if gpu_count > 1 {
+                format!("GPU {i}").into()
+            } else {
+                "GPU".into()
+            },
+            value: value.into(),
+            line: line.into(),
+            color: CYAN,
+        });
+        keys.push(CardKey::Gpu(g.id.clone()));
     }
 
     let count = cards.len() as i32;
@@ -670,6 +717,37 @@ fn rebuild_perf(app: &MainWindow, st: &mut AppState) {
             app.set_perf_fill(fill.into());
             app.set_perf_line2(line2.into());
             app.set_perf_color(ORANGE);
+        }
+        Some(CardKey::Gpu(id)) => {
+            let (line, fill) = st
+                .hist_gpu
+                .get(id)
+                .map(|h| series_paths(h, 100.0, vbh))
+                .unwrap_or_default();
+            let g = st.last_gpus.iter().find(|g| &g.id == id);
+            let name = g.map(|g| g.name.as_str()).unwrap_or("GPU");
+            app.set_perf_title(format!("GPU ({name})").into());
+            app.set_perf_value(
+                match g.and_then(|g| g.busy_percent) {
+                    Some(b) => format!("%{b:.0}"),
+                    None => "—".to_string(),
+                }
+                .into(),
+            );
+            let vram = match (g.and_then(|g| g.vram_used), g.and_then(|g| g.vram_total)) {
+                (Some(u), Some(t)) => format!("VRAM {} / {}", fmt_bytes(u), fmt_bytes(t)),
+                _ => "VRAM bilgisi yok".to_string(),
+            };
+            let temp = match g.and_then(|g| g.temp_c) {
+                Some(t) => format!(" • {t:.0}°C"),
+                None => String::new(),
+            };
+            app.set_perf_sub1(format!("{vram}{temp}").into());
+            app.set_perf_sub2(format!("Kullanım (%) • son {HISTORY} sn").into());
+            app.set_perf_line(line.into());
+            app.set_perf_fill(fill.into());
+            app.set_perf_line2(empty);
+            app.set_perf_color(CYAN);
         }
         None => {}
     }
